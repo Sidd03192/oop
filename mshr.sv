@@ -29,7 +29,7 @@ module MSHR #(
     output  logic                           pending_einfo_out,
 
     // output for inferior memory
-    output  logic                           pending_resolution_out,
+    output  logic                           pending_res_out,
     output  logic                           pending_eack_out,
     output  logic[PA_WIDTH-1:0]             paddr_out,
     output  logic                           wd_out,
@@ -42,7 +42,7 @@ module MSHR #(
     always_ff @(posedge clk_in or negedge rst_n) begin
         if (!rst_n) begin
             empty_out <= 1
-            pending_resolution_out <= 0
+            pending_res_out <= 0
             pending_einfo_out <= 0;
             pending_eack_out <= 0;
             wd_out <= 0;
@@ -51,7 +51,7 @@ module MSHR #(
             if (miss_in) begin
                 state <= 1;
                 empty_out <= 0;
-                pending_resolution_out <= 1;
+                pending_res_out <= 1;
                 paddr_out <= paddr_in;
                 wd_out <= wd_in;
                 data_out <= superior_data_in;
@@ -59,23 +59,18 @@ module MSHR #(
         end else if (state == 1) begin
             if (resolve_in) begin
                 state <= 2;
-                pending_resolution_out <= 0;
+                pending_res_out <= 0;
                 pending_einfo_out <= 1;
                 data_out <= inferior_data_in;
              end
         end else if (state == 2) begin
             if (evict_in) begin
                 pending_einfo_out <= 0;
+                pending_eack_out <= 1;
+                state <= 3;
                 paddr_out <= paddr_in;
                 wd_out <= wd_in;
-                if (wd_in) begin
-                    state <= 3;
-                    data_out <= superior_data_in;
-                    pending_eack_out <= 1;
-                end else begin
-                    state <= 0;
-                    empty_out <= 1;
-                end
+                data_out <= superior_data_in;
             end
         end else if (state == 3) begin
             if (eack_in) begin
