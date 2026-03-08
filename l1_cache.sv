@@ -97,7 +97,8 @@ module l1_cache #(
         end else begin
             case (state)
             3'd0: begin  // IDLE
-                if (start_index) begin
+
+                if (start_index) begin // cycle 1
                     curr_index    <= trace_vaddr[7:6];
                     curr_is_write <= is_write;
                     curr_wdata    <= wdata;
@@ -109,7 +110,7 @@ module l1_cache #(
             end
 
             3'd1: begin  // tag wait
-                if (start_tag) begin
+                if (start_tag) begin //
                     if (hit) begin
                         // HIT - handle read/write
                         if (curr_is_write) begin
@@ -146,7 +147,7 @@ endmodule
 
 
 
-module mshr_entry # 
+module mshr # 
 (
     parameter PA_WIDTH          = 30,
     parameter DATA_WIDTH        = 64,
