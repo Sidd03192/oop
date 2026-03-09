@@ -1,83 +1,128 @@
+`timescale 1ns/1ps
+
 /*
-    states:
-        0 - Empty
-        1 - Pending Resolution
-        2 - Pending Eviction Info
-        3 - Pending Eviction Ack
+    Single-entry MSHR. Instantiate NUM_MSHRS of these in l1_cache.
+    States:
+        S_IDLE    - free
+        S_WAIT_L2 - fetch request sent to L2, waiting for block
+        S_EVICT   - block received, evicting LRU line this cycle
+        S_EACK    - dirty writeback sent to L2, waiting for ack
 */
-module MSHR #(
-    parameter PA_WIDTH          = 48,
-    parameter BLOCK_SIZE        = 64
+module mshr #(
+    parameter PA_WIDTH   = 30,
+    parameter BLOCK_SIZE = 64,
+    parameter DATA_WIDTH = 64,
+    parameter TAG_SIZE   = 24
 )(
-    input   logic                           clk_in,
-    input   logic                           rst_n,
+    input  logic                        clk,
+    input  logic                        rst_n,
 
-    // input from superior memory
-    input   logic                           miss_in,
-    input   logic[PA_WIDTH-1:0]             paddr_in,
-    input   logic                           wd_in,    // write/dirty signal
-    input   logic                           superior_data_in,
-    input   logic                           evict_in,
+    // ── From L1 on miss ──────────────────────────────────────
+    input  logic                        alloc,
+    input  logic [PA_WIDTH-1:0]         alloc_paddr,
+    input  logic                        alloc_is_write,
+    input  logic [DATA_WIDTH-1:0]       alloc_wdata,
 
-    // input from inferior memory
-    input   logic                           resolve_in,
-    input   logic[BLOCK_SIZE*8-1:0]         inferior_data_in,
-    input   logic                           eack_in,
+    // ── From L2 ──────────────────────────────────────────────
+    input  logic                        l2_valid,       // L2 returning a block
+    input  logic [PA_WIDTH-1:0]         l2_paddr,       // which address
+    input  logic [BLOCK_SIZE*8-1:0]     l2_data,        // fetched block
+    input  logic                        l2_eack,        // L2 acked dirty writeback
 
-    // output for superior memory
-    output  logic                           empty_out,
-    output  logic                           pending_einfo_out,
+    // ── Eviction info from L1 (combinational, no latency) ────
+    input  logic                        evict_dirty,    // LRU line is dirty
+    input  logic [PA_WIDTH-1:0]         evict_paddr,    // LRU line's address
+    input  logic [BLOCK_SIZE*8-1:0]     evict_data,     // LRU line's contents
 
-    // output for inferior memory
-    output  logic                           pending_res_out,
-    output  logic                           pending_eack_out,
-    output  logic[PA_WIDTH-1:0]             paddr_out,
-    output  logic                           wd_out,
+    // ── To L1 ────────────────────────────────────────────────
+    output logic                        empty,          // slot is free
+    output logic                        install_valid,  // L1 should install block now
+    output logic [PA_WIDTH-1:0]         install_paddr,
+    output logic [BLOCK_SIZE*8-1:0]     install_block,
+    output logic                        install_is_write,
+    output logic [DATA_WIDTH-1:0]       install_wdata,
 
-    // output for both memory systems
-    output  logic[BLOCK_SIZE*8-1:0]         data_out
+    // ── To L2 ────────────────────────────────────────────────
+    output logic                        req_valid,      // fetch request
+    output logic [PA_WIDTH-1:0]         req_paddr,
+    output logic                        wb_valid,       // dirty writeback
+    output logic [PA_WIDTH-1:0]         wb_paddr,
+    output logic [BLOCK_SIZE*8-1:0]     wb_data
 );
-    logic[1:0]              state;
-    
-    always_ff @(posedge clk_in or negedge rst_n) begin
+
+    localparam logic [1:0] S_IDLE    = 2'b00;
+    localparam logic [1:0] S_WAIT_L2 = 2'b01;
+    localparam logic [1:0] S_EVICT   = 2'b10;
+    localparam logic [1:0] S_EACK    = 2'b11;
+
+    logic [1:0]              state;
+    logic [PA_WIDTH-1:0]     paddr;
+    logic                    is_write;
+    logic [DATA_WIDTH-1:0]   wdata;
+    logic [BLOCK_SIZE*8-1:0] block;
+
+    // ── Combinational outputs ─────────────────────────────────
+    assign empty           = (state == S_IDLE);
+    assign req_valid       = (state == S_WAIT_L2);
+    assign req_paddr       = paddr;
+    assign install_valid   = (state == S_EVICT);
+    assign install_paddr   = paddr;
+    assign install_block   = block;
+    assign install_is_write = is_write;
+    assign install_wdata   = wdata;
+
+    // ── Sequential state machine ──────────────────────────────
+    always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            empty_out <= 1
-            pending_res_out <= 0
-            pending_einfo_out <= 0;
-            pending_eack_out <= 0;
-            wd_out <= 0;
-            data_out <= 0;
-        end else if (state == 0) begin
-            if (miss_in) begin
-                state <= 1;
-                empty_out <= 0;
-                pending_res_out <= 1;
-                paddr_out <= paddr_in;
-                wd_out <= wd_in;
-                data_out <= superior_data_in;
-            end
-        end else if (state == 1) begin
-            if (resolve_in) begin
-                state <= 2;
-                pending_res_out <= 0;
-                pending_einfo_out <= 1;
-                data_out <= inferior_data_in;
-             end
-        end else if (state == 2) begin
-            if (evict_in) begin
-                pending_einfo_out <= 0;
-                pending_eack_out <= 1;
-                state <= 3;
-                paddr_out <= paddr_in;
-                wd_out <= wd_in;
-                data_out <= superior_data_in;
-            end
-        end else if (state == 3) begin
-            if (eack_in) begin
-                state <= 0;
-                pending_eack_out <= 1;
-                empty_out <= 0;
-            end
+            state    <= S_IDLE;
+            wb_valid <= 1'b0;
+            wb_paddr <= '0;
+            wb_data  <= '0;
+            paddr    <= '0;
+            is_write <= 1'b0;
+            wdata    <= '0;
+            block    <= '0;
+        end else begin
+            case (state)
+
+                S_IDLE: begin
+                    if (alloc) begin
+                        state    <= S_WAIT_L2;
+                        paddr    <= alloc_paddr;
+                        is_write <= alloc_is_write;
+                        wdata    <= alloc_wdata;
+                    end
+                end
+
+                S_WAIT_L2: begin
+                    // Wait for L2 to return the block for our address
+                    if (l2_valid && l2_paddr == paddr) begin
+                        block <= l2_data;
+                        state <= S_EVICT;
+                    end
+                end
+
+                S_EVICT: begin
+                    // install_valid is high this cycle — L1 writes to cache arrays.
+                    // Simultaneously decide if we need a dirty writeback.
+                    if (evict_dirty) begin
+                        wb_valid <= 1'b1;
+                        wb_paddr <= evict_paddr;
+                        wb_data  <= evict_data;
+                        state    <= S_EACK;
+                    end else begin
+                        state    <= S_IDLE;   // clean eviction, done
+                    end
+                end
+
+                S_EACK: begin
+                    if (l2_eack) begin
+                        wb_valid <= 1'b0;
+                        state    <= S_IDLE;
+                    end
+                end
+
+            endcase
         end
     end
 
