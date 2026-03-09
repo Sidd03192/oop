@@ -28,7 +28,7 @@ module memory_subsystem #(
     parameter L1_CAPACITY   = 512,      
     parameter L1_WAYS       = 2,
     parameter L1_MSHRS      = 2,
-    parameter L2_CAPACITY   = 4096,     
+    parameter L2_CAPACITY   = \,     
     parameter L2_WAYS       = 4,
     parameter L2_MSHRS      = 4
 )(
