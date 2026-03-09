@@ -11,13 +11,17 @@ module l2_cache #(
     input   logic                        clk,
     input   logic                        rst_n,
 
+    // input   logic                           evict_in,
+    // input   logic[PA_WIDTH-1:0]             e_paddr_in,
+    // input   logic                           e_dirty_in,
+    // input   logic[BLOCK_SIZE*8-1:0]         e_data_in,
+
     // input from superior MSHRS
     input   logic                           pending_res_in[L1_MSHRS],
     input   logic                           pending_eack_in[L1_MSHRS],
     input   logic[PA_WIDTH-1:0]             paddr_in,[L1_MSHRS],
     input   logic                           wd_in[L1_MSHRS],
     input   logic[BLOCK_SIZE*8-1:0]         data_in[L1_MSHRS],
-
 
     // output to superior MSHRS
     output  logic                           resolve_out[L1_MSHRS],
