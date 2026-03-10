@@ -65,6 +65,13 @@ module tlb (
                 // Check valid bit and if the virtual addresses match (in always)
                 if (hit_found) begin
                     result_paddr <= {ways[hit_index][59:36], vaddr[5:0]};
+
+                    // update lrumat 
+                    lrumat[hit_index] <= {16{1'b1}};
+                    for (int j = 0; j < 16; j++) begin
+                        lrumat[j][hit_index] <= 1'b0;
+                    end
+
                     panic_tlb_miss <= 1'b0;
                 end else begin
                     panic_tlb_miss <= 1'b1;
