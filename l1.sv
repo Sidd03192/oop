@@ -4,7 +4,7 @@ module l1_cache #(
     parameter L1_CAPACITY   = 512,
     parameter L1_WAYS       = 2,
     parameter BLOCK_SIZE    = 64,
-    parameter NUM_MSHRS     = 2,
+    parameter L1_MSHRS     = 2,
     parameter VA_WIDTH      = 48,
     parameter PA_WIDTH      = 30
 )(
@@ -29,7 +29,7 @@ module l1_cache #(
     localparam int OFFSET_BITS = $clog2(BLOCK_SIE);
     localparam int INDEX_BITS = $clog2(L1_SETS);
     localparam int TAG_BITS = PA_WIDTH - INDEX_BITS - OFFSET_BITS;
-    localparam int MSHR_BITS = $clog2(NUM_MSHRS);
+    localparam int MSHR_BITS = $clog2(L1_MSHRS);
     localparam int WAY_BITS = $clog2(L1_WAYS);
 
     // cache state
@@ -78,7 +78,7 @@ module l1_cache #(
     always_comb begin
         free_mshr_idx   = '0;
         free_mshr_valid = 1'b0;
-        for (int i = NUM_MSHRS-1; i >= 0; i--) begin
+        for (int i = L1_MSHRS-1; i >= 0; i--) begin
             if (l2_empty_out[i]) begin
                 free_mshr_idx   = i[MSHR_BITS-1:0];
                 free_mshr_valid = 1'b1;
@@ -106,8 +106,12 @@ module l1_cache #(
     logic                           l2_empty_out[L1_MSHRS],
     logic                           l2_resolve_out[L1_MSHRS];
     logic[BLOCK_SIZE*8-1:0]         l2_superior_data_out[L1_MSHRS];
+    logic                           l2_stall_out;
+    assign                          l2_stall_out = ~|l2_empty_out;
 
-    l2_cache l2 (
+    l2_cache #(
+        .L1_MSHRS(L1_MSHRS)
+    ) l2 (
         .clk(clk),
         .rst_n(rst_n),
 
@@ -126,7 +130,8 @@ module l1_cache #(
         // output to L1-L2 MSHRs
         .empty_out(l2_empty_out),
         .resolve_out(l2_resolve_out),
-        .superior_data_out(l2_superior_data_out)
+        .superior_data_out(l2_superior_data_out),
+        .stall_out(l2_stall_out)
     );
 
 
@@ -142,6 +147,11 @@ module l1_cache #(
             cur_index <= '0;
             cur_w <= '0;
             cur_wdata <= '0;
+            paddr_reg <= '0;
+            l2_miss_in <= '0;
+            l2_paddr_in <= '0;
+            l2_w_in <= '0;
+            l2_data_in <= '0;
         end else begin
             // ensure we don't send inadvertent signals to L2
             l2_miss_in = '0;

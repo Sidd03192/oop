@@ -19,7 +19,6 @@ module l2_cache #(
 
     // input from superior MSHRS
     input   logic                           miss_in[L1_MSHRS],
-    input   logic                           pending_res_in[L1_MSHRS],
     input   logic[PA_WIDTH-1:0]             paddr_in[L1_MSHRS],
     input   logic                           w_in[L1_MSHRS],
     input   logic[BLOCK_SIZE*8-1:0]         data_in[L1_MSHRS],
@@ -31,17 +30,130 @@ module l2_cache #(
 );
 
 
+    localparam int L2_SETS = L2_CAPACITY / (BLOCK_SIZE * L2_WAYS);
+    localparam int OFFSET_BITS = $clog2(BLOCK_SIE);
+    localparam int INDEX_BITS = $clog2(L2_SETS);
+    localparam int TAG_BITS = PA_WIDTH - INDEX_BITS - OFFSET_BITS;
+    localparam int WAY_BITS = $clog2(L2_WAYS);
+    localparam int L2_MSHR_BITS = $clog2(L2_MSHRS);
+    localparam int L1_MSHR_BITS = $clog2(L1_MSHRS);
+
+
+    // cache state
+    logic [BLOCK_SIZE * 8 - 1:0]    contents    [L2_SETS][L2_WAYS];
+    logic [TAG_BITS - 1:0]          tags        [L2_SETS][L2_WAYS];
+    logic                           lru_mat     [L2_SETS][L2_WAYS][L2_WAYS];
+    logic [WAY_BITS-1:0]            lru         [L2_SETS];
+    logic                           valid       [L2_SETS][L2_WAYS];
+    logic                           dirty       [L2_SETS][L2_WAYS];
+
+    always_comb begin
+        logic row_empty;
+        for (int i = 0; i < L2_SETS; i++) begin
+            lru[i] = '0;
+            for (int j = 0; j < L2_WAYS; j++) begin
+                row_empty = 1'b1;
+                for (int k = 0; k < L2_WAYS; k++)
+                    row_empty &= ~lru_mat[i][j][k];
+                if (row_empty)
+                    lru[i] = j[WAY_BITS-1:0];
+            end
+        end
+    end
+
+    // mshr input parsing
+    logic                   miss;
+    logic[L1_MSHR_BITS-1:0] miss_mshr_index;
+    logic[PA_WIDTH-1]       miss_paddr;
+    logic                   miss_w;
+    logic[BLOCK_SIZE-1:0]   miss_data;
+    logic[INDEX_BITS-1:0]   miss_index;
+    logic[TAG_BITS-1:0]     miss_tag;
+    assign                  miss = |miss_in;
+    assign                  miss_paddr = paddr_in[miss_mshr_index];
+    assign                  miss_w = w_in[miss_mshr_index];
+    assign                  miss_data = data_in[miss_mshr_index];
+    assign                  miss_index = miss_paddr[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
+    assign                  miss_tag = miss_paddr[PA_WIDTH-1:PA_WIDTH-TAG_BITS];
+
+    always_comb begin
+        for (int i = 0; i < L1_MSHRS; i++) begin
+            if (miss_in[i]) begin
+                miss_index = i[L1_MSHR_BITS-1:0];
+            end
+        end
+    end
+
+    logic                   hit;
+    logic[WAY_BITS-1:0]     hit_way;
+    always_comb begin
+        hit = 0;
+        hit_way = '0;
+        for (int w = 0; w < L1_WAYS; w++) begin
+            if (valids[miss_tag][w] && tags[miss_tag][w] == miss_tag) begin
+                hit = 1;
+                hit_way = w[WAY_BITS-1:0];
+            end
+        end
+    end
+
+
+
+    // MSHR state
+    logic[INDEX_BITS-1:0]           mshr_index_buf[L2_MSHRS];
+    logic[TAG_BITS-1:0]             mshr_tag_buf[L2_MSHRS];
+    
+    // L2 -> memory eviction buffer
+    logic                           evict_in;
+    logic[PA_WIDTH-1:0]             e_paddr_in;
+    logic                           e_dirty_in;
+    logic[BLOCK_SIZE*8-1:0]         e_data_in;
+
+    // mainmem input from L2
+    logic                           mm_miss_in[L2_MSHRS];
+    logic[PA_WIDTH-1:0]             mm_paddr_in[L2_MSHRS];
+    logic                           mm_w_in[L2_MSHRS];
+    logic[BLOCK_SIZE*8-1:0]         mm_data_in[L2_MSHRS];
+
+    // mainmem output to L2
+    logic                           mm_empty_out[L2_MSHRS],
+    logic                           mm_resolve_out[L2_MSHRS];
+    logic[BLOCK_SIZE*8-1:0]         mm_superior_data_out[L2_MSHRS];
+    logic                           mm_stall_out;
+
+    assign                          mm_stall_out = ~|mm_empty_out;
+
+
+    // TODO finish lru_mat, lru implementation
+
     always_ff @(posedge clk, or negedge rst_n) begin
         if (rst_n) begin
             empty_out = '1;
+            resolve_out = '0;
+            superior_data_out = 0'
         end else begin
             // reset out signals
             resolve_out = '0;
 
-            // process inputs
-                // on pending_res_in signal set empty_out to 0
 
-            // on MSHR resolution set empty_out to 1
+            // process l1 eviction buffer
+
+            // process l1 request
+            if (miss) begin
+                empty_out[miss_mshr_index] = 0;
+                if (hit) begin
+                    // return, touch LRU
+                    // update lru_mat with touch at miss_index, hit_tag
+                    // touch hit_way in set miss_index
+                    for (int k = 0; k < L2_WAYS; k++) begin
+                        lru_mat[miss_index][hit_way][k] <= 1'b1;  // set row
+                        lru_mat[miss_index][k][hit_way] <= 1'b0;  // clear column
+                    end
+                end else begin
+                    // go to L2 MSHR
+                end
+            end
+            
         end
     end
 
