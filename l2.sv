@@ -91,7 +91,11 @@ module l2_cache #(
     logic [TAG_SIZE-1:0]   req_tag;
     assign req_index = l1_req_paddr[OFFSET_BITS +: INDEX_BITS];
     assign req_tag   = l1_req_paddr[PA_WIDTH-1 -: TAG_SIZE];
-     
+    logic                          req_hit;
+    logic [$clog2(L2_WAYS)-1:0]   req_hit_way;
+    logic                          mshr_dup;
+    logic                          mshr_full_l2;
+    logic [$clog2(NUM_MSHRS)-1:0]  mshr_free_idx; 
 
     // Combinational: address decode for L1 writeback
     logic [INDEX_BITS-1:0] wb_index_in;
@@ -212,7 +216,7 @@ module l2_cache #(
                         tags[wb_index_in][wb_victim_way]         <= wb_tag_in;
                         set_valids[wb_index_in][wb_victim_way]   <= 1'b1;
                         set_dirty[wb_index_in][wb_victim_way]    <= 1'b1;
-                        
+
                         // touch this new block to simulate lru 
                         for (int i = 0; i < L2_WAYS; i++) begin
                             lru_matrix[wb_index_in][wb_victim_way][i] <= 1'b1;
@@ -223,8 +227,53 @@ module l2_cache #(
                     
                 end
 
-                
-                
+            if (l1_req_valid) begin // handle MSHR of l1 
+                // find it in l1 
+                req_hit = 1'b0;
+                req_hit_way = '0;
+                for (int w = 0; w < L2_WAYS; w++) begin
+                    if (set_valids[req_index][w] && tags[req_index][w] == req_tag) begin
+                        req_hit = 1'b1;
+                        req_hit_way = w[$clog2(L2_WAYS)-1:0];
+                    end
+                end
+
+                if (req_hit) begin
+                    // send the output back on wires. 
+                    l1_data_valid <= 1'b1;
+                    l1_data_paddr <= l1_req_paddr;
+                    l1_data       <= set_contents[req_index][req_hit_way];
+                    // update LRU
+                    for (int i = 0; i < L2_WAYS; i++) begin
+                        lru_matrix[req_index][req_hit_way][i] <= 1'b1;
+                        lru_matrix[req_index][i][req_hit_way] <= 1'b0;
+                    end
+                end
+                //TODO: Handle duplicate entries / do a queueu
+                else begin
+                    // miss — allocate MSHR
+                    mshr_full_l2 = 1'b1;
+                    mshr_free_idx = '0;
+
+                    for (int i = 0; i < NUM_MSHRS; i++) begin
+                        if (mshr_state[i] == MS_IDLE && mshr_full_l2) begin
+                            mshr_full_l2 = 1'b0;
+                            mshr_free_idx = i[$clog2(NUM_MSHRS)-1:0];
+                        end
+                    end
+
+                    if (!mshr_full_l2) begin
+                        mshr_state[mshr_free_idx] <= MS_UNRESOLVED;
+                        mshr_paddr[mshr_free_idx] <= l1_req_paddr;
+                    end
+                    // IF we full then dont send ack for the MSHR and keep it unresolve.d 
+                end
+
+
+
+                end
+
+
 
 
 
