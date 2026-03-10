@@ -33,11 +33,13 @@ module l1_cache #(
     localparam int WAY_BITS = $clog2(L1_WAYS);
 
     // cache state
-    logic [BLOCK_SIZE * 8 - 1:0]    contents [L1_SETS][L1_WAYS];
-    logic [TAG_BITS - 1:0]          tags [L1_SETS][L1_WAYS];
-    logic                           lru   [L1_SETS];   // This only works when L1_WAYS = 2, otherwise 
-    logic                           valid [L1_SETS][L1_WAYS];
-    logic                           dirty [L1_SETS][L1_WAYS];
+    // contents/tags: unpacked so variable indices work in iverilog (no reset needed — valid gates reads)
+    logic [BLOCK_SIZE*8-1:0]            contents [L1_SETS][L1_WAYS];
+    logic [TAG_BITS-1:0]                tags     [L1_SETS][L1_WAYS];
+    // valid/dirty/lru: packed so <= '0 reset works
+    logic [L1_SETS-1:0]                                              lru;   // This only works when L1_WAYS = 2, otherwise
+    logic [L1_SETS-1:0][L1_WAYS-1:0]                                valid;
+    logic [L1_SETS-1:0][L1_WAYS-1:0]                                dirty;
 
     /*
         States
@@ -64,7 +66,7 @@ module l1_cache #(
         hit = 1'b0;
         hit_way = '0;
         for (int w = 0; w < L1_WAYS; w++) begin
-            if (valid[curr_index][w] && tags[curr_index][w] == incoming_tag) begin
+            if (valid[cur_index][w] && tags[cur_index][w] == incoming_tag) begin
                 hit = 1'b1;
                 hit_way = w[WAY_BITS-1:0];
             end
@@ -87,9 +89,9 @@ module l1_cache #(
     end
 
     // MSHR state
-    logic[INDEX_BITS-1:0]           mshr_index_buf[L1_MSHRS];
-    logic[TAG_BITS-1:0]             mshr_tag_buf[L1_MSHRS];
-    
+    logic[L1_MSHRS-1:0][INDEX_BITS-1:0]           mshr_index_buf;
+    logic[L1_MSHRS-1:0][TAG_BITS-1:0]             mshr_tag_buf;
+
     // L1 -> L2 eviction buffer
     logic                           evict_in;
     logic[PA_WIDTH-1:0]             e_paddr_in;
@@ -97,17 +99,17 @@ module l1_cache #(
     logic[BLOCK_SIZE*8-1:0]         e_data_in;
 
     // L2 input from L1
-    logic                           l2_miss_in[L1_MSHRS];
-    logic[PA_WIDTH-1:0]             l2_paddr_in[L1_MSHRS];
-    logic                           l2_w_in[L1_MSHRS];
-    logic[BLOCK_SIZE*8-1:0]         l2_data_in[L1_MSHRS];
+    logic[L1_MSHRS-1:0]                     l2_miss_in;
+    logic[L1_MSHRS-1:0][PA_WIDTH-1:0]       l2_paddr_in;
+    logic[L1_MSHRS-1:0]                     l2_w_in;
+    logic[L1_MSHRS-1:0][BLOCK_SIZE*8-1:0]   l2_data_in;
 
     // L2 output to L1
-    logic                           l2_empty_out[L1_MSHRS];
-    logic                           l2_resolve_out[L1_MSHRS];
-    logic[BLOCK_SIZE*8-1:0]         l2_superior_data_out[L1_MSHRS];
-    logic                           l2_stall_out;
-    assign                          l2_stall_out = ~|l2_empty_out;
+    logic[L1_MSHRS-1:0]                             l2_empty_out;
+    logic[L1_MSHRS-1:0]                             l2_resolve_out;
+    logic[L1_MSHRS-1:0][BLOCK_SIZE*8-1:0]           l2_superior_data_out;
+    logic                                           l2_stall_out;
+    assign                                          l2_stall_out = ~|l2_empty_out;
 
     l2_cache #(
         .L1_MSHRS(L1_MSHRS)
@@ -124,14 +126,13 @@ module l1_cache #(
         // input from L1-L2 MSHRs
         .miss_in(l2_miss_in),
         .paddr_in(l2_paddr_in),
-        .wd_in(l2_w_in),
+        .w_in(l2_w_in),
         .data_in(l2_data_in),
 
         // output to L1-L2 MSHRs
         .empty_out(l2_empty_out),
         .resolve_out(l2_resolve_out),
-        .superior_data_out(l2_superior_data_out),
-        .stall_out(l2_stall_out)
+        .superior_data_out(l2_superior_data_out)
     );
 
     // resolution logic
@@ -139,10 +140,11 @@ module l1_cache #(
     logic[MSHR_BITS-1:0]            res_mshr_index;
     logic[INDEX_BITS-1:0]           res_index;
     logic[TAG_BITS-1:0]             res_tag;
-    logic[WAY_BITS-1:0]             res_way;
+    logic[WAY_BITS-1:0]             res_way; // way to evict and replace with resolution
 
     assign res_index = mshr_index_buf[res_mshr_index];
-    assign res_tag = mshr_tag_buf[res_mshr_index]
+    assign res_tag = mshr_tag_buf[res_mshr_index];
+    assign res_way[0] = lru[res_index]; // only works with 1 way 
 
     // resolution mshr index
     always_comb begin
@@ -151,18 +153,6 @@ module l1_cache #(
             if (l2_resolve_out[i]) begin
                 res = 1;
                 res_mshr_index = i[MSHR_BITS-1:0];
-            end
-        end
-    end
-
-    // resolution way
-    always_comb begin
-        for (int w = 0; w < L1_WAYS; w++) begin
-            if (
-                tags[res_index][w] == res_tag &&
-                valid[res_index][w]
-            ) begin
-                res_way = w[INDEX_BITS-1:0];
             end
         end
     end
@@ -199,12 +189,12 @@ module l1_cache #(
                 // e_paddr_in <= l2_paddr_in[res_mshr_index];
                 e_paddr_in <= {tags[res_index][res_way], res_index[INDEX_BITS-1:0], {OFFSET_BITS{1'b0}}};
                 e_dirty_in <= dirty[res_index][res_way];
-                e_data_in <= contents[res_set][res_way];
+                e_data_in <= contents[res_index][res_way];
 
                 dirty[res_index][res_way] <= 0;
-                valid[res_set][res_way] <= 1;
-                contents[res_set][res_way] <= l2_superior_data_out[res_mshr_index];
-                tags[res_set][res_way] <= mshr_tag_buf[i];
+                valid[res_index][res_way] <= 1;
+                contents[res_index][res_way] <= l2_superior_data_out[res_mshr_index];
+                tags[res_index][res_way] <= mshr_tag_buf[i];
             end
 
             if (state == 0) begin

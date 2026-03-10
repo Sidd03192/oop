@@ -53,8 +53,11 @@ module mainmem #(
     // responses to L2 MSHRs (same protocol as L2 -> L1)
     output logic                        empty_out           [L2_MSHRS],
     output logic                        resolve_out         [L2_MSHRS],
-    output logic [BLOCK_SIZE*8-1:0]     superior_data_out   [L2_MSHRS]
+    output logic [BLOCK_SIZE*8-1:0]     superior_data_out   [L2_MSHRS],
+    output logic                        stall_out
 );
+
+    assign stall_out = ~|empty_out;
 
     localparam int OFFSET_BITS  = $clog2(BLOCK_SIZE);
     localparam int DEPTH_BITS   = $clog2(SIM_DEPTH);

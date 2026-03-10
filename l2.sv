@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 module l2_cache #(
     parameter L2_CAPACITY   = 4096,
     parameter L2_WAYS       = 4,
@@ -8,25 +10,25 @@ module l2_cache #(
     parameter DATA_WIDTH    = 64,
     parameter TAG_SIZE      = 20
 )(
-    input   logic                        clk,
-    input   logic                        rst_n,
+    input   logic                                   clk,
+    input   logic                                   rst_n,
 
     // eviction buffer from L1 to L2
-    input   logic                           evict_in,
-    input   logic[PA_WIDTH-1:0]             e_paddr_in,
-    input   logic                           e_dirty_in,
-    input   logic[BLOCK_SIZE*8-1:0]         e_data_in,
+    input   logic                                   evict_in,
+    input   logic[PA_WIDTH-1:0]                     e_paddr_in,
+    input   logic                                   e_dirty_in,
+    input   logic[BLOCK_SIZE*8-1:0]                 e_data_in,
 
     // input from superior MSHRS
-    input   logic                           miss_in[L1_MSHRS],
-    input   logic[PA_WIDTH-1:0]             paddr_in[L1_MSHRS],
-    input   logic                           w_in[L1_MSHRS],
-    input   logic[BLOCK_SIZE*8-1:0]         data_in[L1_MSHRS],
+    input   logic[L1_MSHRS-1:0]                     miss_in,
+    input   logic[L1_MSHRS-1:0][PA_WIDTH-1:0]       paddr_in,
+    input   logic[L1_MSHRS-1:0]                     w_in,
+    input   logic[L1_MSHRS-1:0][BLOCK_SIZE*8-1:0]   data_in,
 
     // output to superior MSHRS
-    output  logic                           empty_out[L1_MSHRS],
-    output  logic                           resolve_out[L1_MSHRS],
-    output  logic[BLOCK_SIZE*8-1:0]         superior_data_out[L1_MSHRS]
+    output  logic[L1_MSHRS-1:0]                     empty_out,
+    output  logic[L1_MSHRS-1:0]                     resolve_out,
+    output  logic[L1_MSHRS-1:0][BLOCK_SIZE*8-1:0]   superior_data_out
 );
 
 
@@ -113,11 +115,6 @@ module l2_cache #(
     end
 
 
-
-    // MSHR state
-    logic[INDEX_BITS-1:0]           mshr_index_buf[L2_MSHRS];
-    logic[TAG_BITS-1:0]             mshr_tag_buf[L2_MSHRS];
-    
     // L2 -> memory eviction buffer
     logic                           n_evict_in;
     logic[PA_WIDTH-1:0]             n_e_paddr_in;
@@ -138,24 +135,77 @@ module l2_cache #(
 
     assign                          mm_stall_out = ~|mm_empty_out;
 
+    mainmem mm(
+        .clk(clk),
+        .rst_n(rst_n),
+
+        .evict_in(n_evict_in),
+        .e_paddr_in(n_e_paddr_in),
+        .e_dirty_in(n_e_dirty_in),
+        .e_data_in(n_e_data_in),
+
+        .miss_in(mm_miss_in),
+        .paddr_in(mm_paddr_in),
+        .w_in(mm_w_in),
+        .data_in(mm_data_in),
+
+        .empty_out(mm_empty_out),
+        .resolve_out(mm_resolve_out),
+        .superior_data_out(mm_superior_data_out)
+    );
+
+    // resolution logic
+    logic                           res;
+    logic[L2_MSHR_BITS-1:0]         res_mshr_index;
+    logic[INDEX_BITS-1:0]           res_index;
+    logic[TAG_BITS-1:0]             res_tag;
+    logic[WAY_BITS-1:0]             res_way;
+
+    assign res_index = mm_paddr_in[res_mshr_index][INDEX_BITS+OFFSET_BITS-1:OFFSET_BITS];
+    assign res_tag = mm_paddr_in[res_mshr_index][PA_WIDTH-1:PA_WIDTH-TAG_BITS];
+
+    // resolution mshr index
+    always_comb begin
+        res = 0;
+        for (int i = 0; i < L2_MSHRS; i++) begin
+            if (mm_resolve_out[i]) begin
+                res = 1;
+                res_mshr_index = i[L2_MSHR_BITS-1:0];
+            end
+        end
+    end
+
+    // resolution way
+    always_comb begin
+        for (int w = 0; w < L2_WAYS; w++) begin
+            if (
+                tags[res_index][w] == res_tag &&
+                valid[res_index][w]
+            ) begin
+                res_way = w[INDEX_BITS-1:0];
+            end
+        end
+    end
+
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            empty_out = '1;
-            resolve_out = '0;
-            superior_data_out = 0'
+            empty_out <= '1;
+            resolve_out <= '0;
+            superior_data_out <= '0;
         end else begin
             // reset out signals
-            resolve_out = '0;
+            resolve_out <= '0;
 
             if (evict_in) begin
                 // process l1 eviction buffer
                 if (e_hit) begin
                     if (e_dirty_in) begin
-                        contents[e_index][e_hit_way] = e_data_in;
+                        contents[e_index][e_hit_way] <= e_data_in;
                         // touch lru
                         for (int k = 0; k < L2_WAYS; k++) begin
-                            lru_mat[e_index][e_hit_way][k] = 1'b1;  // set row
-                            lru_mat[e_index][k][e_hit_way] = 1'b0;  // clear column
+                            lru_mat[e_index][e_hit_way][k] <= 1'b1;  // set row
+                            lru_mat[e_index][k][e_hit_way] <= 1'b0;  // clear column
                         end
                         // TODO modify in_l1 flag
                     end
@@ -164,24 +214,47 @@ module l2_cache #(
                 end
             end
 
+            if (res) begin
+                n_evict_in <= 1;
+                n_e_paddr_in <= {tags[res_index][res_way], res_index[INDEX_BITS-1:0], {OFFSET_BITS{1'b0}}};
+                n_e_dirty_in <= dirty[res_index][res_way];
+                n_e_data_in <= contents[res_index][res_way];
+
+                dirty[res_index][res_way] <= 0;
+                valid[res_index][res_way] <= 1;
+                contents[res_index][res_way] <= mm_superior_data_out[res_mshr_index];
+                tags[res_index][res_way] <= mm_paddr_in[res_mshr_index][PA_WIDTH-1:PA_WIDTH-TAG_BITS];
+            end
+
             // process l1 request
             if (miss) begin
-                empty_out[miss_mshr_index] = 0;
+                empty_out[miss_mshr_index] <= 0;
                 if (hit) begin
                     // return, touch LRU
                     if (w_in[miss_mshr_index]) begin
-                        contents[miss_index][hit_way] = data_in[miss_mshr_index];
+                        contents[miss_index][hit_way] <= data_in[miss_mshr_index];
+                        superior_data_out[miss_mshr_index] <= data_in[miss_mshr_index];
                     end
-                    resolve_out[miss_mshr_index] = 1;
-                    superior_data_out[miss_mshr_index] = contents[miss_index][hit_way];
+                    else begin
+                        superior_data_out[miss_mshr_index] <= contents[miss_index][hit_way];
+                    end
+                    resolve_out[miss_mshr_index] <= 1;
                     // update lru_mat with touch at miss_index, hit_tag
                     // touch lru
                     for (int k = 0; k < L2_WAYS; k++) begin
-                        lru_mat[miss_index][hit_way][k] = 1'b1;  // set row
-                        lru_mat[miss_index][k][hit_way] = 1'b0;  // clear column
+                        lru_mat[miss_index][hit_way][k] <= 1'b1;  // set row
+                        lru_mat[miss_index][k][hit_way] <= 1'b0;  // clear column
                     end
                 end else begin
                     // go to L2 MSHR
+                    if (free_mshr_valid) begin
+                        mm_miss_in[free_mshr_idx] <= 1;
+                        mm_paddr_in[free_mshr_idx] <= paddr_in[miss_mshr_index];
+                        mm_w_in[free_mshr_idx] <= w_in[miss_mshr_index];
+                        mm_data_in[free_mshr_idx] <= data_in[miss_mshr_index];
+                    end else begin
+                        // shouldn't happen
+                    end
                 end
             end
             
