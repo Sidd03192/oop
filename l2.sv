@@ -114,6 +114,16 @@ module l2_cache #(
     logic [$clog2(L2_WAYS)-1:0] wb_victim_way;
 
 
+    // MSHR temps
+    logic                          mshr_install_done;
+    logic [INDEX_BITS-1:0]         mshr_inst_index;
+    logic [TAG_SIZE-1:0]           mshr_inst_tag;
+    logic [$clog2(L2_WAYS)-1:0]   mshr_inst_victim;
+    logic                          mshr_inst_found_invalid;
+    logic                          mshr_inst_victim_dirty;
+    logic                          mshr_inst_is_lru;
+
+
     
     logic [2:0] states;
 
@@ -152,6 +162,17 @@ module l2_cache #(
             l1_data_valid <= 1'b0;
             wb_push       = 1'b0;
             wb_pop        = 1'b0;
+
+            // check if MSHR response from mem (on next cycle we cna add it ito the cache)
+            if (mem_resp_valid) begin
+                for (int i = 0; i < NUM_MSHRS; i++) begin
+                    if (mshr_state[i] == MS_WAIT_MEM && mshr_paddr[i] == mem_resp_paddr) begin
+                        mshr_block[i] <= mem_resp_rdata;
+                        mshr_state[i] <= MS_RESOLVED;
+                    end
+                end
+            end
+
 
             if (l1_wb_valid) begin // if on the writeback, then it is a write. 
                 // handle writeback. 
@@ -226,6 +247,78 @@ module l2_cache #(
                     end    
                     
                 end
+            end
+            
+
+            // actually install the mshr block once we get it (1 cycle delay. )
+            mshr_install_done = 1'b0; // only do onec. 
+            for (int i = 0; i < NUM_MSHRS; i++) begin
+                // find first resolved block
+                if (!mshr_install_done && mshr_state[i] == MS_RESOLVED) begin
+                    // get data. 
+                    mshr_inst_index = mshr_paddr[i][OFFSET_BITS +: INDEX_BITS];
+                    mshr_inst_tag   = mshr_paddr[i][PA_WIDTH-1 -: TAG_SIZE];
+
+                    // find victim: invalid first
+                    mshr_inst_found_invalid = 1'b0;
+                    mshr_inst_victim = '0;
+                    for (int w = 0; w < L2_WAYS; w++) begin
+                        if (!set_valids[mshr_inst_index][w] && !mshr_inst_found_invalid) begin
+                            mshr_inst_victim = w[$clog2(L2_WAYS)-1:0];
+                            mshr_inst_found_invalid = 1'b1;
+                        end
+                    end
+
+                    // if no invalid, then do lru 
+                    if (!mshr_inst_found_invalid) begin
+                        for (int w = 0; w < L2_WAYS; w++) begin
+                            mshr_inst_is_lru = 1'b1;
+                            for (int j = 0; j < L2_WAYS; j++)
+                                if (j != w && lru_matrix[mshr_inst_index][w][j])
+                                    mshr_inst_is_lru = 1'b0;
+                            if (mshr_inst_is_lru)
+                                mshr_inst_victim = w[$clog2(L2_WAYS)-1:0];
+                        end
+                    end
+
+
+                    // reuse logic for kicking smtg out. 
+                    mshr_inst_victim_dirty = set_dirty[mshr_inst_index][mshr_inst_victim] &&
+                                            set_valids[mshr_inst_index][mshr_inst_victim];
+
+                    if (!(mshr_inst_victim_dirty && wb_full)) begin
+                        if (mshr_inst_victim_dirty) begin
+                            wb_push       = 1'b1;
+                            wb_push_paddr = {tags[mshr_inst_index][mshr_inst_victim], mshr_inst_index, {OFFSET_BITS{1'b0}}};
+                            wb_push_data  = set_contents[mshr_inst_index][mshr_inst_victim];
+                        end
+
+                        set_contents[mshr_inst_index][mshr_inst_victim] <= mshr_block[i];
+                        tags[mshr_inst_index][mshr_inst_victim]         <= mshr_inst_tag;
+                        set_valids[mshr_inst_index][mshr_inst_victim]   <= 1'b1;
+                        set_dirty[mshr_inst_index][mshr_inst_victim]    <= 1'b0; // clean fill
+
+                        for (int k = 0; k < L2_WAYS; k++) begin
+                            lru_matrix[mshr_inst_index][mshr_inst_victim][k] <= 1'b1;
+                            lru_matrix[mshr_inst_index][k][mshr_inst_victim] <= 1'b0;
+                        end
+
+                        // return to L1
+                        l1_data_valid <= 1'b1;
+                        l1_data_paddr <= mshr_paddr[i];
+                        l1_data       <= mshr_block[i];
+
+                        // free the mshr entry. 
+                        mshr_state[i] <= MS_IDLE;
+                        mshr_install_done = 1'b1;
+                    end
+                end
+            end
+
+
+
+
+
 
             if (l1_req_valid) begin // handle MSHR of l1 
                 // find it in l1 
@@ -268,10 +361,7 @@ module l2_cache #(
                     end
                     // IF we full then dont send ack for the MSHR and keep it unresolve.d 
                 end
-
-
-
-                end
+            end
 
 
 
