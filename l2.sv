@@ -47,6 +47,8 @@ module l2_cache #(
     logic                           valid       [L2_SETS][L2_WAYS];
     logic                           dirty       [L2_SETS][L2_WAYS];
 
+    // TODO add in_l1 bit and ensure blocks in l1 are never evicted from L2
+
     always_comb begin
         logic row_empty;
         for (int i = 0; i < L2_SETS; i++) begin
@@ -136,9 +138,6 @@ module l2_cache #(
 
     assign                          mm_stall_out = ~|mm_empty_out;
 
-
-    // TODO finish lru_mat, lru implementation
-
     always_ff @(posedge clk, or negedge rst_n) begin
         if (rst_n) begin
             empty_out = '1;
@@ -153,6 +152,12 @@ module l2_cache #(
                 if (e_hit) begin
                     if (e_dirty_in) begin
                         contents[e_index][e_hit_way] = e_data_in;
+                        // touch lru
+                        for (int k = 0; k < L2_WAYS; k++) begin
+                            lru_mat[e_index][e_hit_way][k] = 1'b1;  // set row
+                            lru_mat[e_index][k][e_hit_way] = 1'b0;  // clear column
+                        end
+                        // TODO modify in_l1 flag
                     end
                 end else begin
                     // shouldn't happen
@@ -164,11 +169,16 @@ module l2_cache #(
                 empty_out[miss_mshr_index] = 0;
                 if (hit) begin
                     // return, touch LRU
+                    if (w_in[miss_mshr_index]) begin
+                        contents[miss_index][hit_way] = data_in[miss_mshr_index];
+                    end
+                    resolve_out[miss_mshr_index] = 1;
+                    superior_data_out[miss_mshr_index] = contents[miss_index][hit_way];
                     // update lru_mat with touch at miss_index, hit_tag
-                    // touch hit_way in set miss_index
+                    // touch lru
                     for (int k = 0; k < L2_WAYS; k++) begin
-                        lru_mat[miss_index][hit_way][k] <= 1'b1;  // set row
-                        lru_mat[miss_index][k][hit_way] <= 1'b0;  // clear column
+                        lru_mat[miss_index][hit_way][k] = 1'b1;  // set row
+                        lru_mat[miss_index][k][hit_way] = 1'b0;  // clear column
                     end
                 end else begin
                     // go to L2 MSHR
