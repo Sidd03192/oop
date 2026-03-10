@@ -39,12 +39,7 @@ module l1_cache #(
     logic                     valid   [L1_SETS][L1_WAYS];
     logic                     dirty   [L1_SETS][L1_WAYS];
 
-    /*
-        States
-            0 - Wait
-            1 - Tagging
-    */
-    logic                   state;
+    logic                   n_process;
     logic [INDEX_BITS-1:0]  cur_index;
     logic                   cur_w;
     logic [BLOCK_SIZE-1:0]  cur_wdata;
@@ -73,10 +68,10 @@ module l1_cache #(
     logic [TAG_BITS-1:0]    mshr_tag_buf   [L1_MSHRS];
 
     // L1 -> L2 eviction buffer
-    logic                   evict_in;
-    logic [PA_WIDTH-1:0]    e_paddr_in;
-    logic                   e_dirty_in;
-    logic [BLOCK_SIZE*8-1:0] e_data_in;
+    logic                       evict_in;
+    logic [PA_WIDTH-1:0]        e_paddr_in;
+    logic                       e_dirty_in;
+    logic [BLOCK_SIZE*8-1:0]    e_data_in;
 
     // L2 input from L1 — unpacked so always_ff variable indexing works
     logic                    l2_miss_in  [L1_MSHRS];
@@ -156,7 +151,7 @@ module l1_cache #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             lru   <= '0;
-            state <= '0;
+            n_process <= 0;
             cur_index <= '0;
             cur_w     <= '0;
             cur_wdata <= '0;
@@ -192,15 +187,17 @@ module l1_cache #(
                 tags[res_index][res_way]     <= res_tag;
             end
 
-            if (state == 0) begin
-                if (start_in && free_mshr_valid) begin
-                    cur_index <= trace_vaddr_in[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
-                    cur_w     <= w_in;
-                    cur_wdata <= wdata_in;
-                    state     <= 1'b1;
-                end
-            end else begin  // state == 1
-                state     <= 1'b0;
+            if (start_in) begin
+                cur_index <= trace_vaddr_in[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
+                cur_w     <= w_in;
+                cur_wdata <= wdata_in;
+                n_process <= 1;
+            end
+            else if (free_mshr_valid) begin
+                n_process <= 0;
+            end
+
+            if (n_process && free_mshr_valid) begin
                 paddr_reg <= tlb_paddr_in;
                 if (hit) begin
                     lru[cur_index] <= ~hit_way[0];
