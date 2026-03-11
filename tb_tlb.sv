@@ -2,22 +2,30 @@
 
 module tb_tlb;
 
-    // ── Parameters ────────────────────────────────────────────────────────
-    // vaddr[47:12] = VPN (36 bits), vaddr[11:0] = page offset
-    // paddr[29:6]  = PPN (24 bits), paddr[5:0]  = block offset
+    // ── Address layout ────────────────────────────────────────────────────
+    // vaddr[47:12] = VPN (36 bits)   vaddr[5:0] = block offset
+    // paddr[29:6]  = PPN (24 bits)   paddr[5:0] = block offset
+    // ways[i] = {valid(1), PPN(24), VPN(36)} = 61 bits
+    // hit when ways[i][60]==1 && ways[i][35:0] == vaddr[47:12]
+    // result  = {ways[hit][59:36], vaddr[5:0]}
 
-    // ── Test addresses ────────────────────────────────────────────────────
-    // Virtual addresses: distinct VPNs in vaddr[47:12]
-    localparam [47:0] VADDR_A = {36'hABCDE_F0000, 12'h000};
-    localparam [47:0] VADDR_B = {36'h11111_22222, 12'h100};
-    localparam [47:0] VADDR_C = {36'hCCCCC_CCCCC, 12'h200};
-    localparam [47:0] VADDR_D = {36'hDDDDD_DDDDD, 12'h300};
+    // ── Test virtual addresses (distinct VPNs in [47:12]) ─────────────────
+    localparam [47:0] VADDR_A     = {36'hA_BCDE_F000, 12'h000};
+    localparam [47:0] VADDR_B     = {36'h1_2345_6789, 12'h000};
+    localparam [47:0] VADDR_C     = {36'hC_CCCC_CCCC, 12'h000};
+    localparam [47:0] VADDR_D     = {36'hD_DDDD_DDDD, 12'h000};
+    localparam [47:0] VADDR_E     = {36'hE_EEEE_EEEE, 12'h000};
+    localparam [47:0] VADDR_F     = {36'hF_FFFF_FFFF, 12'h000};
+    // Same VPN as A, offset = 0x2A
+    localparam [47:0] VADDR_A_OFF = {36'hA_BCDE_F000, 6'h00, 6'h2A};
 
-    // Physical addresses: [29:6] = PPN, [5:0] = block offset
+    // ── Test physical addresses ───────────────────────────────────────────
     localparam [29:0] PADDR_A = {24'hAABBCC, 6'h00};
     localparam [29:0] PADDR_B = {24'h112233, 6'h00};
     localparam [29:0] PADDR_C = {24'hC0FFEE, 6'h00};
     localparam [29:0] PADDR_D = {24'hDEADBE, 6'h00};
+    localparam [29:0] PADDR_E = {24'hE1E1E1, 6'h00};
+    localparam [29:0] PADDR_F = {24'hF2F2F2, 6'h00};
 
     // ── DUT signals ───────────────────────────────────────────────────────
     reg         clk;
@@ -96,7 +104,9 @@ module tb_tlb;
     end
     endtask
 
-    // ── Fill one TLB entry (one cycle pulse) ──────────────────────────────
+    // ── Fill one TLB entry ────────────────────────────────────────────────
+    // Advances to negedge after operation completes, safe to check
+    // internal state (ways, lrumat) immediately after this returns.
     task tlb_fill;
         input [47:0] va;
         input [29:0] pa;
@@ -114,7 +124,10 @@ module tb_tlb;
     end
     endtask
 
-    // ── Lookup one virtual address (one cycle pulse) ───────────────────────
+    // ── Perform a TLB lookup ──────────────────────────────────────────────
+    // Samples outputs on posedge (while start still high, valid/panic live)
+    // then deasserts start. Checks should run immediately after this returns
+    // with NO extra @(negedge clk) in the caller.
     task tlb_lookup;
         input [47:0] va;
     begin
@@ -122,9 +135,28 @@ module tb_tlb;
         is_tlb_fill = 0;
         vaddr       = va;
         start       = 1;
+        @(posedge clk); #1;   // outputs (valid, panic, result_paddr) are live here
         @(negedge clk);
         start       = 0;
         vaddr       = 0;
+    end
+    endtask
+
+    // ── Fill all 16 ways with unique entries ──────────────────────────────
+    task fill_all_16;
+        integer i;
+    begin
+        for (i = 0; i < 16; i = i + 1) begin
+            @(negedge clk);
+            is_tlb_fill = 1;
+            vaddr       = {32'hDEAD0000 | i[15:0], 16'h0};
+            paddr       = {18'h3CAFE0   | i[5:0],   6'h0};
+            start       = 1;
+            @(negedge clk);
+            start       = 0;
+            is_tlb_fill = 0;
+        end
+        @(negedge clk);
     end
     endtask
 
@@ -136,7 +168,7 @@ module tb_tlb;
         rst_n = 0;
 
         // ─────────────────────────────────────────────────────────────────
-        // T1: RESET
+        // T1: RESET – verify all outputs and internal state cleared
         // ─────────────────────────────────────────────────────────────────
         $display("\n=== T1: Reset ===");
         @(negedge clk);
@@ -144,143 +176,206 @@ module tb_tlb;
         rst_n = 1;
         @(negedge clk);
 
-        check_bit(0, "T1 ready==1 after reset",          ready,          1'b1);
-        check_bit(0, "T1 valid==0 after reset",          valid,          1'b0);
-        check_bit(0, "T1 panic_tlb_miss==0 after reset", panic_tlb_miss, 1'b0);
+        check_bit(0, "T1 ready==1 after reset",          ready,            1'b1);
+        check_bit(0, "T1 valid==0 after reset",          valid,            1'b0);
+        check_bit(0, "T1 panic_tlb_miss==0 after reset", panic_tlb_miss,   1'b0);
+        check_bit(0, "T1 ways[0]  valid bit clear",      dut.ways[0][60],  1'b0);
+        check_bit(0, "T1 ways[15] valid bit clear",      dut.ways[15][60], 1'b0);
 
         // ─────────────────────────────────────────────────────────────────
-        // T2: FILL – install entry A into TLB
+        // T2: FILL – fill does not assert valid or panic
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T2: TLB fill entry A ===");
+        $display("\n=== T2: Fill does not assert valid ===");
         tlb_fill(VADDR_A, PADDR_A);
         @(negedge clk);
 
-        // After fill, ready should return high and valid should be low
-        // (fill does not produce a translated result)
-        check_bit(0, "T2 ready==1 after fill",  ready, 1'b1);
-        check_bit(0, "T2 valid==0 after fill",  valid, 1'b0);
-        // Entry should now be present in ways[0]
-        check_bit(0, "T2 ways[0] valid bit set", dut.ways[0][60], 1'b1);
+        check_bit(0, "T2 ready==1 after fill",                      ready,           1'b1);
+        check_bit(0, "T2 valid==0 after fill (no translation out)",  valid,           1'b0);
+        check_bit(0, "T2 panic==0 after fill",                      panic_tlb_miss,  1'b0);
+        check_bit(0, "T2 ways[0] valid bit set",                    dut.ways[0][60], 1'b1);
 
         // ─────────────────────────────────────────────────────────────────
-        // T3: LOOKUP HIT – translate VADDR_A
+        // T3: LOOKUP HIT – translate VADDR_A, check PPN and offset
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T3: Lookup hit for VADDR_A ===");
+        $display("\n=== T3: Lookup hit ===");
         tlb_lookup(VADDR_A);
+        // no extra @(negedge clk) — task already sampled on posedge
+        check_bit(0, "T3 valid==1 on hit",      valid,          1'b1);
+        check_bit(0, "T3 panic==0 on hit",      panic_tlb_miss, 1'b0);
+        check_vec(0, "T3 result_paddr correct",
+                  result_paddr, {PADDR_A[29:6], VADDR_A[5:0]});
+
+        // ─────────────────────────────────────────────────────────────────
+        // T4: LOOKUP MISS – VPN not present, panic asserts
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T4: Lookup miss ===");
+        tlb_lookup(VADDR_B);   // VADDR_B never filled
+        check_bit(0, "T4 valid==1 (lookup completed)", valid,          1'b1);
+        check_bit(0, "T4 panic==1 on miss",            panic_tlb_miss, 1'b1);
+
+        // ─────────────────────────────────────────────────────────────────
+        // T5: READY handshake – deasserts while start is high
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T5: Ready deasserts during start ===");
         @(negedge clk);
-
-        // Expected paddr: PPN from PADDR_A concatenated with block offset
-        // from VADDR_A[5:0].  VADDR_A[5:0] = 6'h00, PADDR_A[29:6] = 24'hAABBCC
-        check_bit(0, "T3 valid==1 on hit",             valid,          1'b1);
-        check_bit(0, "T3 panic_tlb_miss==0 on hit",    panic_tlb_miss, 1'b0);
-        check_vec(0, "T3 result_paddr correct on hit",
-                  result_paddr,
-                  {PADDR_A[29:6], VADDR_A[5:0]});
-
-        // ─────────────────────────────────────────────────────────────────
-        // T4: LOOKUP MISS – address not yet installed
-        // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T4: Lookup miss (VADDR_B not filled) ===");
-        tlb_lookup(VADDR_B);
+        is_tlb_fill = 0;
+        vaddr       = VADDR_A;
+        start       = 1;
+        @(posedge clk); #1;
+        check_bit(0, "T5 ready==0 while start is asserted", ready, 1'b0);
         @(negedge clk);
-
-        check_bit(0, "T4 valid==1 (lookup completed)",   valid,          1'b1);
-        check_bit(0, "T4 panic_tlb_miss==1 on miss",     panic_tlb_miss, 1'b1);
-
-        // ─────────────────────────────────────────────────────────────────
-        // T5: FILL then HIT – install B then translate it
-        // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T5: Fill B then lookup hit ===");
-        tlb_fill(VADDR_B, PADDR_B);
+        start = 0;
+        vaddr = 0;
         @(negedge clk);
-        tlb_lookup(VADDR_B);
-        @(negedge clk);
-
-        check_bit(0, "T5 valid==1 after fill+lookup",           valid,          1'b1);
-        check_bit(0, "T5 panic_tlb_miss==0",                    panic_tlb_miss, 1'b0);
-        check_vec(0, "T5 result_paddr correct for VADDR_B",
-                  result_paddr,
-                  {PADDR_B[29:6], VADDR_B[5:0]});
+        check_bit(0, "T5 ready==1 after start deasserts", ready, 1'b1);
 
         // ─────────────────────────────────────────────────────────────────
-        // T6: Block offset passthrough
-        // Install VADDR_C then look up with the same VPN but different
-        // block-offset bits (vaddr[5:0]) to confirm they pass through.
+        // T6: OUTPUTS CLEAR ON IDLE
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T6: Block offset passthrough ===");
-        tlb_fill(VADDR_C, PADDR_C);
-        @(negedge clk);
-
-        begin : t6_offset
-            reg [47:0] va_with_offset;
-            va_with_offset = {VADDR_C[47:6], 6'h2A};   // same VPN, offset = 0x2A
-            tlb_lookup(va_with_offset);
-            @(negedge clk);
-
-            check_bit(0, "T6 valid==1",          valid,          1'b1);
-            check_bit(0, "T6 no panic",          panic_tlb_miss, 1'b0);
-            check_vec(0, "T6 offset 0x2A passes through",
-                      result_paddr,
-                      {PADDR_C[29:6], 6'h2A});
-        end
-
-        // ─────────────────────────────────────────────────────────────────
-        // T7: Idle (no start) – ready high, valid low
-        // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T7: Idle cycle ===");
+        $display("\n=== T6: Outputs clear when idle ===");
+        tlb_lookup(VADDR_F);   // unfilled -> sets panic
+        check_bit(0, "T6 panic set before idle check", panic_tlb_miss, 1'b1);
         idle_inputs();
-        @(negedge clk);
-        @(negedge clk);
-
-        check_bit(0, "T7 ready==1 when idle", ready, 1'b1);
-        check_bit(0, "T7 valid==0 when idle", valid, 1'b0);
+        @(negedge clk); @(negedge clk);
+        check_bit(0, "T6 valid==0 when idle", valid, 1'b0);
+        check_bit(0, "T6 ready==1 when idle", ready, 1'b1);
 
         // ─────────────────────────────────────────────────────────────────
-        // T8: Multiple fills + independent hits
+        // T7: BLOCK OFFSET PASSTHROUGH
+        // Same VPN as A, vaddr[5:0]=0x2A -> offset forwarded into paddr
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T8: Multiple fills and independent hits ===");
+        $display("\n=== T7: Block offset passthrough ===");
+        tlb_lookup(VADDR_A_OFF);
+        check_bit(0, "T7 valid==1",  valid,          1'b1);
+        check_bit(0, "T7 no panic",  panic_tlb_miss, 1'b0);
+        check_vec(0, "T7 PPN from PADDR_A with offset 0x2A",
+                  result_paddr, {PADDR_A[29:6], 6'h2A});
+
+        // ─────────────────────────────────────────────────────────────────
+        // T8: MULTIPLE ENTRIES – fill B/C/D, all hit independently,
+        //     original entry A survives
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T8: Multiple independent entries ===");
+        tlb_fill(VADDR_B, PADDR_B);
+        tlb_fill(VADDR_C, PADDR_C);
         tlb_fill(VADDR_D, PADDR_D);
         @(negedge clk);
 
-        // Hit on A (installed in T2) – should still be present
-        tlb_lookup(VADDR_A);
-        @(negedge clk);
-        check_bit(0, "T8 VADDR_A still hits after more fills", valid,          1'b1);
-        check_bit(0, "T8 VADDR_A no panic",                    panic_tlb_miss, 1'b0);
-        check_vec(0, "T8 VADDR_A paddr correct",
-                  result_paddr,
-                  {PADDR_A[29:6], VADDR_A[5:0]});
+        tlb_lookup(VADDR_B);
+        check_bit(0, "T8 VADDR_B hit",      valid,          1'b1);
+        check_bit(0, "T8 VADDR_B no panic", panic_tlb_miss, 1'b0);
+        check_vec(0, "T8 VADDR_B paddr",
+                  result_paddr, {PADDR_B[29:6], VADDR_B[5:0]});
 
-        // Hit on D (just installed)
+        tlb_lookup(VADDR_C);
+        check_bit(0, "T8 VADDR_C hit",  valid, 1'b1);
+        check_vec(0, "T8 VADDR_C paddr",
+                  result_paddr, {PADDR_C[29:6], VADDR_C[5:0]});
+
         tlb_lookup(VADDR_D);
-        @(negedge clk);
-        check_bit(0, "T8 VADDR_D hits",    valid,          1'b1);
-        check_bit(0, "T8 VADDR_D no panic", panic_tlb_miss, 1'b0);
-        check_vec(0, "T8 VADDR_D paddr correct",
-                  result_paddr,
-                  {PADDR_D[29:6], VADDR_D[5:0]});
+        check_bit(0, "T8 VADDR_D hit",  valid, 1'b1);
+        check_vec(0, "T8 VADDR_D paddr",
+                  result_paddr, {PADDR_D[29:6], VADDR_D[5:0]});
+
+        tlb_lookup(VADDR_A);
+        check_bit(0, "T8 VADDR_A still hits after more fills", valid, 1'b1);
+        check_vec(0, "T8 VADDR_A paddr unchanged",
+                  result_paddr, {PADDR_A[29:6], VADDR_A[5:0]});
 
         // ─────────────────────────────────────────────────────────────────
-        // T9: Reset clears all entries
+        // T9: CAPACITY – fill all 16 ways, both ends should hit
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T9: Reset clears TLB ===");
+        $display("\n=== T9: Fill all 16 ways (capacity) ===");
         @(negedge clk);
         rst_n = 0;
+        @(negedge clk); @(negedge clk);
+        rst_n = 1;
         @(negedge clk);
+        fill_all_16();
+
+        begin : t9_check
+            reg [47:0] va0, va15;
+            va0  = {32'hDEAD0000 | 16'h0, 16'h0};
+            va15 = {32'hDEAD0000 | 16'hF, 16'h0};
+
+            tlb_lookup(va0);
+            check_bit(0, "T9 slot 0 hits after filling 16",  valid,          1'b1);
+            check_bit(0, "T9 slot 0 no panic",               panic_tlb_miss, 1'b0);
+
+            tlb_lookup(va15);
+            check_bit(0, "T9 slot 15 hits after filling 16", valid,          1'b1);
+            check_bit(0, "T9 slot 15 no panic",              panic_tlb_miss, 1'b0);
+        end
+
+        // ─────────────────────────────────────────────────────────────────
+        // T10: LRU EVICTION – 17th unique fill evicts least-recently-used
+        // Reset first for a clean LRU state, fill all 16 without any
+        // lookups so slot 0 (filled first, never re-accessed) is the LRU.
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T10: LRU eviction on 17th fill ===");
         @(negedge clk);
+        rst_n = 0;
+        @(negedge clk); @(negedge clk);
+        rst_n = 1;
+        @(negedge clk);
+        fill_all_16();   // fills slots 0-15, no lookups so slot 0 is LRU
+
+        begin : t10_evict
+            reg [47:0] va_lru, va_new;
+            reg [29:0] pa_new;
+            va_lru = {32'hDEAD0000 | 16'h0, 16'h0};   // slot 0 VPN — LRU victim
+            va_new = 48'hBEEF_CAFE_0000;               // brand new VPN
+            pa_new = 30'h3FFF_FF00;
+
+            // 17th fill — should evict slot 0 (LRU)
+            tlb_fill(va_new, pa_new);
+            @(negedge clk);
+
+            // New entry must hit
+            tlb_lookup(va_new);
+            check_bit(0, "T10 new entry hits after eviction", valid,          1'b1);
+            check_bit(0, "T10 new entry no panic",            panic_tlb_miss, 1'b0);
+
+            // Evicted LRU entry must now miss
+            tlb_lookup(va_lru);
+            check_bit(0, "T10 LRU entry now misses",          panic_tlb_miss, 1'b1);
+        end
+
+        // ─────────────────────────────────────────────────────────────────
+        // T11: RESET CLEARS ALL ENTRIES
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T11: Reset clears all entries ===");
+        @(negedge clk);
+        rst_n = 0;
+        @(negedge clk); @(negedge clk);
         rst_n = 1;
         @(negedge clk);
 
-        // After reset every ways[i][60] should be 0
-        check_bit(0, "T9 ways[0] invalid after reset", dut.ways[0][60], 1'b0);
-        check_bit(0, "T9 ways[1] invalid after reset", dut.ways[1][60], 1'b0);
-        check_bit(0, "T9 ways[2] invalid after reset", dut.ways[2][60], 1'b0);
-        check_bit(0, "T9 ways[3] invalid after reset", dut.ways[3][60], 1'b0);
+        check_bit(0, "T11 ways[0]  invalid after reset", dut.ways[0][60],  1'b0);
+        check_bit(0, "T11 ways[7]  invalid after reset", dut.ways[7][60],  1'b0);
+        check_bit(0, "T11 ways[15] invalid after reset", dut.ways[15][60], 1'b0);
+        check_bit(0, "T11 ready==1 after reset",         ready,            1'b1);
+        check_bit(0, "T11 valid==0 after reset",         valid,            1'b0);
 
-        // Lookup after reset should miss
-        tlb_lookup(VADDR_A);
+        tlb_fill(VADDR_A, PADDR_A);
         @(negedge clk);
-        check_bit(0, "T9 panic after reset lookup", panic_tlb_miss, 1'b1);
+        rst_n = 0;
+        @(negedge clk); @(negedge clk);
+        rst_n = 1;
+        @(negedge clk);
+        tlb_lookup(VADDR_A);
+        check_bit(0, "T11 filled entry misses after reset", panic_tlb_miss, 1'b1);
+
+        // ─────────────────────────────────────────────────────────────────
+        // T12: BACK-TO-BACK – fill then lookup with no idle gap
+        // ─────────────────────────────────────────────────────────────────
+        $display("\n=== T12: Fill immediately followed by lookup ===");
+        tlb_fill(VADDR_E, PADDR_E);
+        tlb_lookup(VADDR_E);
+        check_bit(0, "T12 hit immediately after fill", valid,          1'b1);
+        check_bit(0, "T12 no panic",                   panic_tlb_miss, 1'b0);
+        check_vec(0, "T12 correct paddr",
+                  result_paddr, {PADDR_E[29:6], VADDR_E[5:0]});
 
         // ─────────────────────────────────────────────────────────────────
         $display("\n==========================================");
