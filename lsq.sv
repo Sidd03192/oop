@@ -336,6 +336,7 @@ module lsq #(
                     if (lq_found_entry == lq_head) begin
                         lq_head <= lq_head + 1'b1;
                     end
+                    issue_op <= LOAD;
                     valid_out <= 1'b1;
                 end
             else if (sq_found && !is_unresolved_load && !unresolved_val_store 
@@ -353,6 +354,7 @@ module lsq #(
                     if (sq_found_entry == sq_head) begin
                         sq_head <= sq_head + 1'b1;
                     end
+                    issue_op <= STORE;
                     valid_out <= 1'b1;
                 end
             end
