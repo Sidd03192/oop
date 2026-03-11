@@ -348,7 +348,7 @@ module lsq #(
                     sq_state[sq_found_entry] <= SQ_EMPTY;
                     for (int i = 0; i < LQ_ENTRIES; i++) begin
                         logic [LQ_PTR_WIDTH-1:0] idx;
-                        idx = sq_head + i[LQ_PTR_WIDTH - 1:0];
+                        idx = lq_head + i[LQ_PTR_WIDTH - 1:0];
                         lq_before_vec[idx][sq_found_entry] <= 1'b0;
                     end
                     if (sq_found_entry == sq_head) begin
