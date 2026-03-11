@@ -149,7 +149,7 @@ module l2_cache #(
             wb_push       = 1'b0;
             wb_pop        = 1'b0;
 
-            if (l1_wb_valid) begin
+            if (l1_wb_valid) begin // if on the writeback, then it is a write. 
                 // handle writeback. 
                 // get tag of writeback
                 wb_hit = 1'b0;
@@ -163,7 +163,7 @@ module l2_cache #(
                     end
                 end
 
-                if (wb_hit) 
+                if (wb_hit) begin
                     set_contents[wb_index_in][wb_hit_way] <= l1_wb_data;
                     set_dirty[wb_index_in][wb_hit_way] <= 1'b1;
                     //update LRU 
@@ -172,6 +172,56 @@ module l2_cache #(
                         lru_matrix[wb_index_in][i][wb_hit_way] <= 1'b0;
                     end
                     l1_wb_ack <=1; // we handled writeback 
+                end
+                else begin // miss for writeback
+                    wb_found_invalid = 1'b0;
+                    wb_victim_way = '0;
+
+                    //  look for invalid way
+                    for (int w = 0; w < L2_WAYS; w++) begin
+                        if (!set_valids[wb_index_in][w] && !wb_found_invalid) begin
+                            wb_victim_way = w[$clog2(L2_WAYS)-1:0];
+                            wb_found_invalid = 1'b1;
+                        end
+                    end
+
+                    if (!wb_found_invalid) begin // do lru to find victim
+                        for (int w = 0; w < L2_WAYS; w++) begin
+                            wb_is_lru = 1'b1;
+                            for (int j = 0; j < L2_WAYS; j++)
+                                if (j != w && lru_matrix[wb_index_in][w][j])
+                                    wb_is_lru = 1'b0;
+                            if (wb_is_lru)
+                                wb_victim_way = w[$clog2(L2_WAYS)-1:0];
+                        end
+                    end
+                    // is victim dirty
+                    wb_victim_dirty = set_dirty[wb_index_in][wb_victim_way] &&
+                          set_valids[wb_index_in][wb_victim_way];
+
+                    // if wb is full, then we do nothing (no ack on the l1 so l1 holds val)
+                    if (!(wb_victim_dirty && wb_full)) begin
+                        if (wb_victim_dirty) begin // if dirty add to buffer
+                            wb_push       = 1'b1;
+                            wb_push_paddr = {tags[wb_index_in][wb_victim_way], wb_index_in, {OFFSET_BITS{1'b0}}};
+                            wb_push_data  = set_contents[wb_index_in][wb_victim_way];
+                        end
+
+                        // now that the dirty is saved we can update the way with wb data. 
+                        set_contents[wb_index_in][wb_victim_way] <= l1_wb_data;
+                        tags[wb_index_in][wb_victim_way]         <= wb_tag_in;
+                        set_valids[wb_index_in][wb_victim_way]   <= 1'b1;
+                        set_dirty[wb_index_in][wb_victim_way]    <= 1'b1;
+                        
+                        // touch this new block to simulate lru 
+                        for (int i = 0; i < L2_WAYS; i++) begin
+                            lru_matrix[wb_index_in][wb_victim_way][i] <= 1'b1;
+                            lru_matrix[wb_index_in][i][wb_victim_way] <= 1'b0;
+                        end
+                        l1_wb_ack <= 1'b1;
+                    end    
+                    
+                end
 
                 
                 
