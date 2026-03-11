@@ -20,59 +20,42 @@
 //   - Stores retire from head only when EA resolved and L1 ready
 // =============================================================================
 module lsq #(
-    parameter LQ_ENTRIES  = 10,
-    parameter SQ_ENTRIES  = 6,
+    parameter LQ_ENTRIES  = 8,
+    parameter SQ_ENTRIES  = 8,
     parameter VA_WIDTH    = 48,
     parameter PA_WIDTH    = 30,
     parameter DATA_WIDTH  = 64
 )(
     input  logic clk,
     input  logic rst_n,
+    input  logic [2:0] op,
 
     // -------------------------------------------------------------------------
-    // LOAD DISPATCH
+    // INCOMING MEM OP
     // -------------------------------------------------------------------------
-    input  logic                            lq_valid_in
-    input  logic [VA_WIDTH-1:0]             lq_vaddr_in,
-    input  logic                            lq_vaddr_ready,  // EA known at dispatch
-    output logic                            lq_ready_out,
+    input  logic                              valid_in,
+    input  logic [VA_WIDTH - 1:0]             vaddr_in,
+    input  logic [DATA_WIDTH -1:0]            wdata_in,
+    input  logic                              vaddr_ready,  // EA known at dispatch
+    input  logic                              wdata_ready,  // Write data known at dispatch
+    input  logic [3:0]                        id_in,  
+    output logic                              ready_out,
 
-    // LOAD effective address resolution (arrives after dispatch if not ready)
-    input  logic                            lq_ea_resolve,
-    input  logic [3:0]                      lq_ea_tag,
-    input  logic [VA_WIDTH-1:0]             lq_ea_vaddr,
-
-    // LOAD issue — exposed so higher module can drive TLB/L1 with correct vaddr
-    output logic                            lq_issue_valid,
-    output logic [VA_WIDTH-1:0]             lq_issue_vaddr,
-    input  logic                            lq_l1_ready,    // L1 accepted load
-    input  logic                            lq_tlb_ready,   // TLB accepted load
-
-    // -------------------------------------------------------------------------
-    // STORE DISPATCH
-    // -------------------------------------------------------------------------
-    input  logic                            sq_valid_in
-    input  logic [VA_WIDTH-1:0]             sq_vaddr_in,
-    input  logic                            sq_vaddr_ready,  // EA known at dispatch
-    input  logic [DATA_WIDTH-1:0]           sq_wdata_in,      // always valid at dispatch
-    input  logic                            sq_wdata_ready,   // data value known at dispatch
-    output logic                            sq_ready_out,
-
-    // STORE effective address resolution
-    input  logic                            sq_ea_resolve,
-    input  logic [$clog2(SQ_ENTRIES)-1:0]   sq_ea_tag,
-    input  logic [VA_WIDTH-1:0]             sq_ea_vaddr,
-
-    // STORE retirement — exposed so higher module can drive TLB/L1
-    output logic                            sq_issue_valid,
-    output logic [VA_WIDTH-1:0]             sq_issue_vaddr,
-    output logic [DATA_WIDTH-1:0]           sq_issue_wdata,
-    input  logic                            sq_l1_ready,    // L1 accepted store
-    input  logic                            sq_tlb_ready    // TLB accepted store
+    // MEM issue — exposed so higher module can drive TLB/L1 with correct vaddr
+    output logic                            issue_valid,
+    output logic [VA_WIDTH-1:0]             issue_vaddr,
+    output logic [DATA_WIDTH -1:0]          issue_wdata,
+    input  logic                            l1_ready,    // L1 accepted
+    input  logic                            tlb_ready,   // TLB accepted
 );
 
     localparam int LQ_PTR_WIDTH = $clog2(LQ_ENTRIES);
     localparam int SQ_PTR_WIDTH = $clog2(SQ_ENTRIES);
+
+    localparam int LOAD         = 3'd0;  // reading from memory
+    localparam int STORE        = 3'd1;  // writing to memory
+    localparam int RESOLVE      = 3'd2;  // Resolving addr or value of a memory operation
+
 
     // =========================================================================
     // LOAD QUEUE STATE
@@ -83,47 +66,48 @@ module lsq #(
         LQ_WAITING_ISSUE = 2'd2   // EA known, waiting for clear path to L1
     } lq_state_t;
 
-    lq_state_t                    lq_state   [LQ_ENTRIES];
-    logic [VA_WIDTH - 1:0]        lq_vaddr   [LQ_ENTRIES];
-    logic [3:0]                   lq_tags    [LQ_ENTRIES];
-    logic [SQ_PTR_WIDTH - 1:0]    lq_sq_idx  [LQ_ENTRIES];  // index of sq tail when load was added
+    lq_state_t                   lq_state      [LQ_ENTRIES];
+    logic [VA_WIDTH - 1:0]       lq_vaddr      [LQ_ENTRIES];
+    logic [3:0]                  lq_id         [LQ_ENTRIES];
+    logic [SQ_PTR_WIDTH - 1:0]   lq_sq_idx     [LQ_ENTRIES];  // index of sq tail when load was added
+    logic [SQ_NUM_ENTRIES - 1:0] lq_before_vec [LQ_ENTRIES];  // Store queue entries before the load
+
 
     logic [LQ_PTR_WIDTH - 1:0] lq_head, lq_tail;
 
-    assign lq_ready_out = ((lq_tail + 1'b1) != lq_head);
+    assign lq_ready_out = ((lq_tail != lq_head) || (lq_state[lq_head] == LQ_EMPTY));
 
     // =========================================================================
     // STORE QUEUE STATE
     // =========================================================================
     typedef enum logic [1:0] {
         SQ_EMPTY         = 2'd0,
-        SQ_WAITING_ADDR  = 2'd1,  // EA not yet known
-        SQ_WAITING_DATA  = 2'd2,  // EA known, waiting for TLB
-        SQ_WAITING_ISSUE = 2'd3   // EA resolved, ready to retire at head
+        SQ_UNRESOLVED    = 2'd1,  // EA & WDATA NOT KNOWN
+        SQ_WAITING_ADDR  = 2'd2,  // EA not yet known
+        SQ_WAITING_DATA  = 2'd3,  // EA known, waiting for data
+        SQ_WAITING_ISSUE = 2'd4   // EA resolved, ready to retire at head
     } sq_state_t;
 
-    sq_state_t                  sq_state  [SQ_ENTRIES];
-    logic [VA_WIDTH - 1:0]      sq_vaddr  [SQ_ENTRIES];
-    logic [DATA_WIDTH - 1:0]    sq_wdata  [SQ_ENTRIES];
-    logic [3:0]                 sq_tags   [SQ_ENTRIES];
-    logic [LQ_PTR_WIDTH - 1:0]  sq_lq_idx [SQ_ENTRIES];  // index of lq tail when store was added
- 
-    // Flat addr_ready vector for cheap combinational scan
-    logic [SQ_ENTRIES - 1:0] sq_addr_ready;
+    sq_state_t                   sq_state      [SQ_ENTRIES];
+    logic [VA_WIDTH - 1:0]       sq_vaddr      [SQ_ENTRIES];
+    logic [DATA_WIDTH - 1:0]     sq_wdata      [SQ_ENTRIES];
+    logic [3:0]                  sq_id         [SQ_ENTRIES];
+    logic [LQ_PTR_WIDTH - 1:0]   sq_lq_idx     [SQ_ENTRIES];  // index of lq tail when store was added
+    logic [LQ_NUM_ENTRIES - 1:0] sq_before_vec [SQ_ENTRIES];  // Load queue entries before the store
 
     logic [SQ_PTR_WIDTH - 1:0] sq_head, sq_tail;
 
-    assign sq_ready_out = ((sq_tail + 1'b1) != sq_head);
+    assign sq_ready_out = ((sq_tail != sq_head) || (sq_state[sq_head] == SQ_EMPTY));
 
     // =========================================================================
     // LOAD ISSUE ARBITRATION
-    // Oldest LQ_WAITING_ISSUE entry, gated by has_unresolved
+    // Oldest LQ_WAITING_ISSUE entry, gated by is_unresolved_store
     // =========================================================================
     logic                    lq_found;
     logic [LQ_PTR_WIDTH-1:0] lq_found_entry;
 
     always_comb begin
-        lq_found       = 1'b0;
+        lq_found       =  1'b0;
         lq_found_entry = '0;
         for (int i = 0; i < LQ_ENTRIES; i++) begin
             logic [LQ_PTR_WIDTH-1:0] idx;
@@ -137,22 +121,87 @@ module lsq #(
 
 
     // =========================================================================
-    // INTERNAL: has_unresolved
-    // Combinational scan of SQ from sq_head to lq_issue_tag (exclusive).
+    // INTERNAL: is_unresolved_store (i.e. an unresolved store)
+    // Combinational scan of SQ from sq_head to lq_sq_idx of found entry.
     // Blocks a load from issuing if any older store has an unknown address.
     // =========================================================================
-    logic has_unresolved;
+    logic is_unresolved_store;
 
     always_comb begin
-   `     has_unresolved = 1'b0;
-        for (int i = 0; i < SQ_ENTRIES; i++) begin
-            logic [SQ_PTR_WIDTH - 1:0] idx;
-            idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
-            if (sq_state[idx] != SQ_EMPTY && !sq_addr_ready[idx]) begin
-                has_unresolved = 1'b1;
+        if (lq_found) begin
+            is_unresolved_store = 1'b0;
+            for (int i = 0; i < SQ_ENTRIES; i++) begin
+                logic [SQ_PTR_WIDTH - 1:0] idx;
+                idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+                // go to before vector of load entry found. 
+                // starting at the tail idx check both before @ idx == 1 && vaddr @ idx
+                // if vaddr is unresolved; mark flag, cannot issue load.
+                if (!is_unresolved_store && lq_before_vec[lq_found_entry][idx] == 1'b1 && (sq_state[idx] == SQ_WAITING_ADDR || sq_state[idx] == SQ_UNRESOLVED)) begin
+                    is_unresolved_store = 1'b1;
+                end
             end
-            if (idx == lq_sq_idx[lq_found_entry]) begin
-                break;
+        end
+    end
+
+
+    // =========================================================================
+    // STORE ISSUE ARBITRATION
+    // Oldest SQ_WAITING_ISSUE entry, gated by is_unresolved_load
+    // =========================================================================
+    logic                    sq_found;
+    logic [LQ_PTR_WIDTH-1:0] sq_found_entry;
+    logic                    sq_unresolved;
+
+    always_comb begin
+        sq_found       =  1'b0;
+        sq_found_entry = '0;
+        for (int i = 0; i < SQ_ENTRIES; i++) begin
+            logic [SQ_PTR_WIDTH-1:0] idx;
+            idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+            if (!sq_unresolved && !sq_found && sq_state[idx] == SQ_WAITING_ISSUE) begin
+                sq_found       = 1'b1;
+                sq_found_entry = idx;
+                sq_entry_vaddr = sq_vaddr[idx];
+            end
+            else if (!sq_unresolved && !sq_found && (sq_state[idx] == SQ_WAITING_ADDR || sq_state[idx] == SQ_UNRESOLVED)) begin
+                sq_unresolved = 1'b1;
+            end
+        end
+    end
+
+
+    // =========================================================================
+    // INTERNAL: is_unresolved_load and unresolved_val_store 
+    // (i.e. an unresolved load or a store of matching vaddr waiting on its value)
+    // Combinational scan of LQ from lq_head to lq_sq_idx of found entry.
+    // Blocks a load from issuing if any older store has an unknown address.
+    // =========================================================================
+    logic is_unresolved_load;
+    logic unresolved_val_store;
+    logic terminate_loop;
+
+    always_comb begin
+        if (sq_found) begin
+            is_unresolved_load = 1'b0;
+            unresolved_val_store = 1'b0;
+            terminate_loop = 1'b0;
+            for (int i = 0; i < LQ_ENTRIES; i++) begin
+                logic [LQ_PTR_WIDTH - 1:0] idx;
+                idx = lq_head + i[LQ_PTR_WIDTH - 1:0];
+                // go to before vector of load entry found. 
+                // starting at the tail idx check both before @ idx == 1 && vaddr @ idx
+                // if vaddr is unresolved; mark flag, cannot issue load.
+                if (!is_unresolved_load && sq_before_vec[sq_found_entry][idx] == 1'b1 && lq_state[idx] == LQ_WAITING_ADDR) begin
+                    is_unresolved_load = 1'b1;
+                end
+            end
+            for (int i = 0; i < SQ_ENTRIES; i++) begin
+                logic [SQ_PTR_WIDTH-1:0] idx;
+                idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+                if (!terminate_loop && !unresolved_val_store && (sq_vaddr[sq_found_entry] == sq_vaddr[idx]) && sq_state[idx] == SQ_WAITING_DATA) begin
+                    terminate_loop = 1'b1;
+                    unresolved_val_store = 1'b1;
+                end
             end
         end
     end
@@ -166,92 +215,114 @@ module lsq #(
             lq_tail      <= '0;
             sq_head      <= '0;
             sq_tail      <= '0;
-            sq_addr_ready <= '0;
             for (int i = 0; i < LQ_ENTRIES; i++) begin
                 lq_state[i] <= LQ_EMPTY;
                 lq_vaddr[i] <= '0;
-                lq_tags[i]  <= '0;
+                lq_idx[i]  <= '0;
                 lq_sq_idx[i]  <= '0;
+                lq_before_vec[i] <= '0;
             end
             for (int i = 0; i < SQ_ENTRIES; i++) begin
                 sq_state[i] <= SQ_EMPTY;
                 sq_vaddr[i] <= '0;
                 sq_wdata[i] <= '0;
-                sq_tags[i]  <= '0;
+                sq_id[i]  <= '0;
                 sq_lq_idx[i]  <= '0;
+                sq_before_vec[i] <= '0;
             end
 
         end else begin
-
+            issue_valid <= 0;
             // -----------------------------------------------------------------
-            // LOAD DISPATCH
+            // DISPATCH
             // -----------------------------------------------------------------
-            if (lq_valid_in && lq_ready_out) begin
-                lq_vaddr[lq_tail] <= lq_vaddr_in;
-                lq_state[lq_tail] <= lq_vaddr_ready ? LQ_WAITING_ISSUE : LQ_WAITING_ADDR;
+            if (valid_in && op == LOAD && lq_state[lq_tail] == LQ_EMPTY) begin
+                lq_vaddr[lq_tail] <= vaddr_in;
+                lq_state[lq_tail] <= vaddr_ready ? LQ_WAITING_ISSUE : LQ_WAITING_ADDR;
+                for (int i = 0; i < SQ_ENTRIES; i++) begin
+                    idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+                    lq_before_vec[lq_tail][idx] = (sq_state[idx] != SQ_EMPTY);
+                end
                 lq_tail           <= lq_tail + 1'b1;
             end
 
-            // -----------------------------------------------------------------
-            // LOAD EA resolution
-            // -----------------------------------------------------------------
-            if (lq_ea_resolve) begin
+            if (valid_in && op == STORE && sq_ready_out) begin
+                sq_vaddr[sq_tail]      <= vaddr_in;
+                sq_wdata[sq_tail]      <= wdata_in;
+                sq_id[sq_tail]         <= id_in;
+                sq_state[sq_tail]      <= wdata_ready ? (vaddr_ready ? SQ_WAITING_ISSUE : SQ_WAITING_ADDRESS) 
+                                                      : (vaddr_ready ? SQ_WAITING_DATA : SQ_UNRESOLVED);
                 for (int i = 0; i < LQ_ENTRIES; i++) begin
                     idx = lq_head + i[LQ_PTR_WIDTH - 1:0];
-                    if (lq_tags[idx] == lq_ea_tag && lq_state[idx] == LQ_WAITING_ADDR) begin
-                        lq_vaddr[idx] <= lq_ea_vaddr;
-                        lq_state[idx] <= LQ_WAITING_ISSUE;
+                    sq_before_vec[idx] = (lq_state[idx] != LQ_EMPTY);
+                end
+                sq_tail                <= sq_tail + 1'b1;
+            end
+
+            // -----------------------------------------------------------------
+            // EA resolution
+            // -----------------------------------------------------------------
+            if (op == RESOLVE) begin
+                if (id_in < 4'd8) begin
+                    for (int i = 0; i < LQ_ENTRIES; i++) begin
+                        idx = lq_head + i[LQ_PTR_WIDTH - 1:0];
+                        if (lq_id[idx] == ea_id && lq_state[idx] == LQ_WAITING_ADDR) begin
+                            lq_vaddr[idx] <= vaddr_in;
+                            lq_state[idx] <= LQ_WAITING_ISSUE;
+                        end
+                    end
+                end
+                else begin
+                    for (int i = 0; i < SQ_ENTRIES; i++) begin
+                        idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+                        if (sq_id[idx] == ea_id) begin
+                            if (sq_state[idx] == SQ_WAITING_ADDR) begin
+                                sq_vaddr[idx] <= vaddr_in;
+                                sq_state[idx] <= SQ_WAITING_ISSUE;
+                            end
+                            else if (sq_state[idx] == SQ_WAITING_DATA) begin
+                                sq_wdata[idx] <= wdata_in;
+                                sq_state[idx] <= SQ_WAITING_ISSUE;
+                            end
+                            else if (sq_state[idx] == SQ_UNRESOLVED) begin
+                                if (vaddr_ready) begin
+                                    sq_vaddr[idx] <= vaddr_in;
+                                    sq_state[idx] <= SQ_WAITING_DATA;
+                                end
+                                if (wdata_ready) begin
+                                    sq_wdata[idx] <= wdata_in;
+                                    sq_state[idx] <= SQ_WAITING_ADDR;
+                                end
+                            end
+                        end
                     end
                 end
             end
 
             // -----------------------------------------------------------------
-            // LOAD dismissal — L1 and TLB both accepted, no unresolved stores
+            // Dismissal — L1 and TLB both accepted
             // -----------------------------------------------------------------
-            if (lq_l1_ready && lq_tlb_ready && lq_found) begin
-                lq_state[lq_found_entry] <= LQ_EMPTY;
-                if (lq_found_entry == lq_head) begin
-                    lq_head <= lq_head + 1'b1;
+            if (l1_ready && tlb_ready) begin
+                if (lq_found && !is_unresolved_store && (lq_before_vec[lq_found_entry][sq_head] == 1'b0)) begin
+                    issue_vaddr <= lq_vaddr[lq_found_entry];
+                    lq_state[lq_found_entry] <= LQ_EMPTY;
+                    for (int i = 0; i < SQ_ENTRIES; i++) begin
+                        idx = sq_head + i[SQ_PTR_WIDTH - 1:0];
+                        sq_before_vec[idx][lq_found_entry] <= 1'b0;
+                    end
+                    issue_valid <= 1'b1;
                 end
-                lq_issue_valid <= !has_unresolved;
-                lq_issue_vaddr <= lq_vaddr[lq_found_entry];
-            end
+                else if (sq_found && !is_unresolved_load && (lq_before_vec[lq_found_entry][sq_head] == 1'b0)) begin
+                    issue_vaddr <= sq_vaddr[sq_found_entry];
+                    issue_wdata <= sq_wdata[sq_found_entry];
+                    sq_state[sq_found_entry] <= LQ_EMPTY;
+                    for (int i = 0; i < LQ_ENTRIES; i++) begin
+                        idx = sq_head + i[LQ_PTR_WIDTH - 1:0];
+                        lq_before_vec[idx][sq_found_entry] <= 1'b0;
+                    end
+                    issue_valid <= 1'b1;
+                end
 
-            // Drain consecutive empty entries from LQ head
-            if (lq_head != lq_tail && lq_state[lq_head] == LQ_EMPTY)
-                lq_head <= lq_head + 1'b1;
-
-            // -----------------------------------------------------------------
-            // STORE DISPATCH
-            // -----------------------------------------------------------------
-            if (sq_valid_in && sq_ready_out) begin
-                sq_vaddr[sq_tail]      <= sq_vaddr_in;
-                sq_wdata[sq_tail]      <= sq_wdata_in;
-                sq_addr_ready[sq_tail] <= sq_vaddr_ready;
-                sq_state[sq_tail]      <= sq_wdata_ready ? (sq_vaddr_ready ? SQ_WAITING_ISSUE : SQ_WAITING_ADDRESS) 
-                                                           : SQ_WAITING_DATA;
-                sq_tail                <= sq_tail + 1'b1;
-            end
-
-            // -----------------------------------------------------------------
-            // STORE EA resolution
-            // -----------------------------------------------------------------
-            if (sq_ea_resolve && sq_state[sq_ea_tag] == SQ_WAITING_ADDR) begin
-                sq_vaddr[sq_ea_tag]      <= sq_ea_vaddr;
-                sq_addr_ready[sq_ea_tag] <= 1'b1;
-                sq_state[sq_ea_tag]      <= SQ_WAITING_ISSUE;
-            end
-
-            // -----------------------------------------------------------------
-            // STORE retirement — head accepted by L1 & TLB
-            // -----------------------------------------------------------------
-            if (sq_issue_valid && sq_l1_ready) begin
-                sq_issue_valid <= (sq_head != sq_tail) && (sq_state[sq_head] == SQ_WAITING_ISSUE);
-                sq_issue_vaddr <= sq_vaddr[sq_head];
-                sq_issue_wdata <= sq_wdata[sq_head];
-                sq_state[sq_head]      <= SQ_EMPTY;
-                sq_addr_ready[sq_head] <= 1'b0;
-                sq_head                <= sq_head + 1'b1;
             end
 
         end
