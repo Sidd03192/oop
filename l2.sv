@@ -64,6 +64,7 @@ module l2_cache #(
     logic [1:0]              mshr_state      [NUM_MSHRS];
     logic [PA_WIDTH-1:0]     mshr_paddr      [NUM_MSHRS];
     logic [BLOCK_SIZE*8-1:0] mshr_block      [NUM_MSHRS];
+    logic                    mshr_mem_issued [NUM_MSHRS];
     logic                    mshr_issued_one;
 
     // Writeback queue fifo to memory
@@ -138,7 +139,7 @@ module l2_cache #(
                 mem_req_wdata    = wb_data_q[wb_head];
             end else begin
                 for (int i = 0; i < NUM_MSHRS; i++) begin
-                    if (mshr_state[i] == MS_UNRESOLVED && !mem_req_valid) begin
+                    if (mshr_state[i] == MS_UNRESOLVED && !mshr_mem_issued[i] && !mem_req_valid) begin
                         mem_req_valid = 1'b1;
                         mem_req_addr  = mshr_paddr[i];
                     end
@@ -170,6 +171,7 @@ module l2_cache #(
                 mshr_state[i]      <= MS_IDLE;
                 mshr_paddr[i]      <= '0;
                 mshr_block[i]      <= '0;
+                mshr_mem_issued[i] <= 1'b0;
             end
 
             // Reset writeback FIFO
@@ -331,6 +333,7 @@ module l2_cache #(
 
                         // free the mshr entry. 
                         mshr_state[i] <= MS_IDLE;
+                        mshr_mem_issued[i] <= 1'b0;
                         mshr_install_done = 1'b1;
                     end
                 end
@@ -383,6 +386,7 @@ module l2_cache #(
                     if (!mshr_dup && !mshr_full_l2) begin
                         mshr_state[mshr_free_idx] <= MS_UNRESOLVED;
                         mshr_paddr[mshr_free_idx] <= l1_req_paddr;
+                        mshr_mem_issued[mshr_free_idx] <= 1'b0;
                     end
                     // if dup: already in flight, L1 will get data when MSHR resolves
                     // if full: L1 must retry
@@ -397,8 +401,9 @@ module l2_cache #(
                 end else begin
                     mshr_issued_one = 1'b0;
                     for (int i = 0; i < NUM_MSHRS; i++) begin
-                        if (mshr_state[i] == MS_UNRESOLVED && !mshr_issued_one) begin
+                        if (mshr_state[i] == MS_UNRESOLVED && !mshr_mem_issued[i] && !mshr_issued_one) begin
                             mshr_state[i] <= MS_WAIT_MEM;
+                            mshr_mem_issued[i] <= 1'b1;
                             mshr_issued_one = 1'b1;
                         end
                     end

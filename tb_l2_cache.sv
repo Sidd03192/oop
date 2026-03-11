@@ -349,15 +349,16 @@ module tb_l2_cache;
 
         // Next cycle: install loop picks it up
         @(negedge clk);
-        @(negedge clk);
-        chk_state("T7 mshr[0]==IDLE after install", dut.mshr_state[0], MS_IDLE);
+        // l1_data_valid is a one-cycle pulse, check right after install posedge
         chk_bit  ("T7 l1_data_valid==1",       l1_data_valid,  1'b1);
         chk_val  ("T7 l1_data_paddr",          l1_data_paddr,  PA_S1T1);
         chk_wide ("T7 l1_data==BLOCK_3",       l1_data,        BLOCK_3);
+        chk_state("T7 mshr[0]==IDLE after install", dut.mshr_state[0], MS_IDLE);
         // Check installed in cache
         chk_bit  ("T7 set_valids[1][0]==1",    dut.set_valids[1][0], 1'b1);
         chk_bit  ("T7 set_dirty[1][0]==0",     dut.set_dirty[1][0],  1'b0); // clean fill
         chk_wide ("T7 contents correct",       dut.set_contents[1][0], BLOCK_3);
+        @(negedge clk); // settle
 
         // ─────────────────────────────────────────────────────────────────────
         // T8: Fill all 4 ways of set 2 via writebacks
