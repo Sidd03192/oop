@@ -37,7 +37,7 @@ module memory_subsystem #(
 
     
     // TRACE INPUT 
-    input  logic [2:0]       trace_addr,
+    input  logic [1:0]       trace_addr,
     input  logic [31:0]      trace_data,
     input  logic             trace_valid,
     output logic             trace_ready,
@@ -69,14 +69,12 @@ module memory_subsystem #(
     if (!rst_n) begin
         trace_line <= '0;
     end else begin
-        if (trace_valid) begin
-            case (trace_addr)
-                2'd0: trace_line[31:0]   <= trace_data;
-                2'd1: trace_line[63:32]  <= trace_data;
-                2'd2: trace_line[95:64]  <= trace_data;
-                2'd3: trace_line[120:96] <= trace_data[24:0];
-            endcase
-        end
+        case (trace_addr)
+            2'd0: trace_line[31:0]   <= trace_data;
+            2'd1: trace_line[63:32]  <= trace_data;
+            2'd2: trace_line[95:64]  <= trace_data;
+            2'd3: trace_line[120:96] <= trace_data[24:0];
+        endcase
     end
 end
     
