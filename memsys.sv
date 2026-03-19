@@ -37,10 +37,10 @@ module memory_subsystem #(
 
     
     // TRACE INPUT 
-    
-    input  logic [TRACE_WIDTH-1:0]      trace_data,
-    input  logic                        trace_valid,
-    output logic                        trace_ready,
+    input  logic [2:0]       trace_addr,
+    input  logic [31:0]      trace_data,
+    input  logic             trace_valid,
+    output logic             trace_ready,
 
     // TO SDRAM PORTS
     output logic [28:0] avm_address,
@@ -62,6 +62,23 @@ module memory_subsystem #(
     //   [51:48]   - trace_id (4-bit operation ID)
     //   [47:0]    -  (48-bit virtual address)
     //   [85:56]   - trace_tlb_paddr (for TLB_FILL only, 30-bit physical addr)
+
+    logic [TRACE_WIDTH-1:0] trace_line;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        trace_line <= '0;
+    end else begin
+        if (trace_valid) begin
+            case (trace_addr)
+                2'd0: trace_line[31:0]   <= trace_data;
+                2'd1: trace_line[63:32]  <= trace_data;
+                2'd2: trace_line[95:64]  <= trace_data;
+                2'd3: trace_line[120:96] <= trace_data[24:0];
+            endcase
+        end
+    end
+end
     
 
     // Operation types
@@ -71,13 +88,13 @@ module memory_subsystem #(
     localparam [2:0] OP_TLB_FILL    = 3'd4;
 
     // input wires for LSQ From trace. 
-    wire [2:0]              trace_op          = trace_data[54:52];
-    wire [3:0]              trace_id          = trace_data[51:48];
-    wire [VA_WIDTH-1:0]     trace_vaddr      = trace_data[47:0];
-    wire                    trace_vaddr_valid = trace_data[55];
-    wire [DATA_WIDTH-1:0]   trace_value       = trace_data[119:56];
-    wire                    trace_value_valid = trace_data[120];
-    wire [PA_WIDTH-1:0]     trace_tlb_paddr   = trace_data[85:56];
+    wire [2:0]              trace_op          = trace_line[54:52];
+    wire [3:0]              trace_id          = trace_line[51:48];
+    wire [VA_WIDTH-1:0]     trace_vaddr      = trace_line[47:0];
+    wire                    trace_vaddr_valid = trace_line[55];
+    wire [DATA_WIDTH-1:0]   trace_value       = trace_line[119:56];
+    wire                    trace_value_valid = trace_line[120];
+    wire [PA_WIDTH-1:0]     trace_tlb_paddr   = trace_line[85:56];
 
     wire is_load    = (trace_op == OP_MEM_LOAD);
     wire is_store   = (trace_op == OP_MEM_STORE);
