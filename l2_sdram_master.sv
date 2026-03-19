@@ -118,7 +118,7 @@ module l2_sdram_master (
                 S_IDLE: begin
                     burst_cnt <= '0;
                     if (req_valid) begin
-                        r_addr <= {req_addr[29:6], 3'b0};
+                        r_addr <= {2'b0, req_addr[29:6], 3'b0};
                         paddr_out <= req_addr;
                         state  <= req_wr ? S_WRITE_CMD : S_READ_CMD;
                     end

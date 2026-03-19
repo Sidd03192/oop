@@ -42,16 +42,16 @@ module memory_subsystem #(
     input  logic                        trace_valid,
     output logic                        trace_ready,
 
-    
-    // MEMORY INTERFACE
-    output logic                        mem_req_valid,
-    output logic                        mem_req_is_write,
-    output logic [PA_WIDTH-1:0]         mem_req_addr,
-    output logic [BLOCK_SIZE*8-1:0]     mem_req_wdata,  // Full cache line
-    input  logic                        mem_req_ready,
-    input  logic                        mem_resp_valid,
-    input  logic [PA_WIDTH-1:0]         mem_resp_paddr,
-    input  logic [BLOCK_SIZE*8-1:0]     mem_resp_rdata
+    // TO SDRAM PORTS
+    output logic [28:0] avm_address,
+    output logic  [7:0] avm_burstcount,
+    output logic        avm_read,
+    output logic        avm_write,
+    output logic [63:0] avm_writedata,
+    output logic  [7:0] avm_byteenable,
+    input  logic [63:0] avm_readdata,
+    input  logic        avm_readdatavalid,
+    input  logic        avm_waitrequest
 );
     
     // Trace format (121 bits):
@@ -225,6 +225,16 @@ module memory_subsystem #(
         .l2_data        (l2_l1_data)
     );
 
+        // MEMORY INTERFACE
+    logic                        mem_req_valid;
+    logic                        mem_req_is_write;
+    logic [PA_WIDTH-1:0]         mem_req_addr;
+    logic [BLOCK_SIZE*8-1:0]     mem_req_wdata;  // Full cache line
+    logic                        mem_req_ready;
+    logic                        mem_resp_valid;
+    logic [PA_WIDTH-1:0]         mem_resp_paddr;
+    logic [BLOCK_SIZE*8-1:0]     mem_resp_rdata;
+
     l2_cache #(
         .L2_CAPACITY    (L2_CAPACITY),
         .L2_WAYS        (L2_WAYS),
@@ -260,6 +270,34 @@ module memory_subsystem #(
         .mem_resp_valid (mem_resp_valid),
         .mem_resp_paddr (mem_resp_paddr),
         .mem_resp_rdata (mem_resp_rdata)
+    );
+
+    l2_sdram_master avm_sdram (
+        .clk   (clk),
+        .rst_n (rst_n),
+
+        // From L2
+        .req_valid (mem_req_valid),
+        .req_addr  (mem_req_addr),
+        .req_wr    (mem_req_is_write),
+        .req_wdata (mem_req_wdata),
+
+        // To L2
+        .rdata_out (mem_resp_rdata),
+        .paddr_out (mem_resp_paddr),
+        .ready     (mem_req_ready),
+        .valid     (mem_resp_valid),
+
+        // TO SDRAM PORTS
+        .avm_address       (avm_address),
+        .avm_burstcount    (avm_burstcount),
+        .avm_read          (avm_read),
+        .avm_write         (avm_write),
+        .avm_writedata     (avm_writedata),
+        .avm_byteenable    (avm_byteenable),
+        .avm_readdata      (avm_readdata),
+        .avm_readdatavalid (avm_readdatavalid),
+        .avm_waitrequest   (avm_waitrequest)
     );
 
 // comb logic to handle issue buffer. 
