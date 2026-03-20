@@ -655,7 +655,7 @@ module tb_memsys_v2;
                     if (!found &&
                         dut.u_l2.set_valids[set_idx][way] &&
                         dut.u_l2.tags[set_idx][way] == l2_tag) begin
-                        value = dut.u_l2.set_contents[set_idx][way][word_idx*DATA_WIDTH +: DATA_WIDTH];
+                        value = dut.u_l2.set_contents[way][set_idx][word_idx*DATA_WIDTH +: DATA_WIDTH];
                         found = 1'b1;
                     end
                 end

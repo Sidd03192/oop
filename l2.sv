@@ -52,7 +52,9 @@ module l2_cache #(
     localparam [1:0] MS_RESOLVED   = 2'b11;
 
     // cache arrays
-    logic [BLOCK_SIZE*8-1:0]  set_contents [L2_SETS][L2_WAYS];
+    // Store line data as one RAM-like array per way so synthesis sees
+    // L2_WAYS memories rather than a single flattened bank of cache lines.
+    (* ramstyle = "M10K" *) logic [BLOCK_SIZE*8-1:0] set_contents [L2_WAYS][L2_SETS];
     logic [TAG_SIZE-1:0]      tags         [L2_SETS][L2_WAYS];
     logic [L2_WAYS-1:0]       set_valids   [L2_SETS];
     logic [L2_WAYS-1:0]       set_dirty    [L2_SETS];
@@ -223,7 +225,7 @@ module l2_cache #(
                 end
 
                 if (wb_hit) begin
-                    set_contents[wb_index_in][wb_hit_way] <= l1_wb_data;
+                    set_contents[wb_hit_way][wb_index_in] <= l1_wb_data;
                     set_dirty[wb_index_in][wb_hit_way] <= 1'b1;
                     //update LRU 
                     for (int i = 0; i < L2_WAYS; i++) begin
@@ -263,11 +265,11 @@ module l2_cache #(
                         if (wb_victim_dirty) begin // if dirty add to buffer
                             wb_push       = 1'b1;
                             wb_push_paddr = {tags[wb_index_in][wb_victim_way], wb_index_in, {OFFSET_BITS{1'b0}}};
-                            wb_push_data  = set_contents[wb_index_in][wb_victim_way];
+                            wb_push_data  = set_contents[wb_victim_way][wb_index_in];
                         end
 
                         // now that the dirty is saved we can update the way with wb data. 
-                        set_contents[wb_index_in][wb_victim_way] <= l1_wb_data;
+                        set_contents[wb_victim_way][wb_index_in] <= l1_wb_data;
                         tags[wb_index_in][wb_victim_way]         <= wb_tag_in;
                         set_valids[wb_index_in][wb_victim_way]   <= 1'b1;
                         set_dirty[wb_index_in][wb_victim_way]    <= 1'b1;
@@ -334,10 +336,10 @@ module l2_cache #(
                     if (mshr_inst_victim_dirty) begin
                         wb_push       = 1'b1;
                         wb_push_paddr = {tags[mshr_inst_index][mshr_inst_victim], mshr_inst_index, {OFFSET_BITS{1'b0}}};
-                        wb_push_data  = set_contents[mshr_inst_index][mshr_inst_victim];
+                        wb_push_data  = set_contents[mshr_inst_victim][mshr_inst_index];
                     end
 
-                    set_contents[mshr_inst_index][mshr_inst_victim] <= install_pending_block;
+                    set_contents[mshr_inst_victim][mshr_inst_index] <= install_pending_block;
                     tags[mshr_inst_index][mshr_inst_victim]         <= mshr_inst_tag;
                     set_valids[mshr_inst_index][mshr_inst_victim]   <= 1'b1;
                     set_dirty[mshr_inst_index][mshr_inst_victim]    <= 1'b0; // clean fill
@@ -375,7 +377,7 @@ module l2_cache #(
                     // send the output back on wires. 
                     l1_data_valid <= 1'b1;
                     l1_data_paddr <= req_pending_paddr;
-                    l1_data       <= set_contents[req_index][req_hit_way];
+                    l1_data       <= set_contents[req_hit_way][req_index];
                     // update LRU
                     for (int i = 0; i < L2_WAYS; i++) begin
                         lru_matrix[req_index][req_hit_way][i] <= 1'b1;
