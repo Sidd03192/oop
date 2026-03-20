@@ -50,6 +50,7 @@ module lsq_tb;
     logic                    valid_out;
     logic [VA_WIDTH-1:0]     issue_vaddr;
     logic [DATA_WIDTH-1:0]   issue_wdata;
+    logic [2:0]              issue_op;
 
     // -------------------------------------------------------------------------
     // DUT instantiation
@@ -76,7 +77,8 @@ module lsq_tb;
         .sq_ready    (sq_ready),
         .valid_out   (valid_out),
         .issue_vaddr (issue_vaddr),
-        .issue_wdata (issue_wdata)
+        .issue_wdata (issue_wdata),
+        .issue_op    (issue_op)
     );
 
     // -------------------------------------------------------------------------
