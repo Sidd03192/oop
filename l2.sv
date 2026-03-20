@@ -44,6 +44,7 @@ module l2_cache #(
     localparam int INDEX_BITS  = $clog2(L2_SETS);
     localparam int OFFSET_BITS = $clog2(BLOCK_SIZE);
     localparam int TAG_SIZE    = PA_WIDTH - INDEX_BITS - OFFSET_BITS;
+    localparam int LINE_W      = BLOCK_SIZE * 8;
 
     // MSHR states
     localparam [1:0] MS_IDLE       = 2'b00;
@@ -54,10 +55,11 @@ module l2_cache #(
     // cache arrays
     // Store line data as one RAM-like array per way so synthesis sees
     // L2_WAYS memories rather than a single flattened bank of cache lines.
-    (* ramstyle = "M10K" *) logic [BLOCK_SIZE*8-1:0] set_contents [L2_WAYS][L2_SETS];
+    (* ramstyle = "M10K" *) logic [LINE_W-1:0] set_contents [L2_WAYS][L2_SETS];
     logic [TAG_SIZE-1:0]      tags         [L2_SETS][L2_WAYS];
     logic [L2_WAYS-1:0]       set_valids   [L2_SETS];
     logic [L2_WAYS-1:0]       set_dirty    [L2_SETS];
+    logic [LINE_W-1:0]        set_read_data [L2_WAYS];
 
     // 4 way n^2 matrix for each set (fully unpacked for iverilog)
     logic lru_matrix [L2_SETS][L2_WAYS][L2_WAYS];
@@ -72,7 +74,21 @@ module l2_cache #(
     logic [PA_WIDTH-1:0]     req_pending_paddr;
     logic                    install_pending_valid;
     logic [PA_WIDTH-1:0]     install_pending_paddr;
-    logic [BLOCK_SIZE*8-1:0] install_pending_block;
+    logic [LINE_W-1:0]       install_pending_block;
+
+    localparam logic [1:0] DATA_RD_NONE    = 2'b00;
+    localparam logic [1:0] DATA_RD_REQ_HIT = 2'b01;
+    localparam logic [1:0] DATA_RD_WB_EVICT = 2'b10;
+    localparam logic [1:0] DATA_RD_FILL_EVICT = 2'b11;
+
+    logic                    data_rd_pending;
+    logic [1:0]              data_rd_kind;
+    logic [INDEX_BITS-1:0]   data_rd_index;
+    logic [$clog2(L2_WAYS)-1:0] data_rd_way;
+    logic [PA_WIDTH-1:0]     data_rd_paddr;
+    logic [PA_WIDTH-1:0]     data_rd_wb_paddr;
+    logic [TAG_SIZE-1:0]     data_rd_new_tag;
+    logic [LINE_W-1:0]       data_rd_new_line;
 
     // Writeback queue fifo to memory
     localparam int WB_DEPTH = NUM_MSHRS;
@@ -186,6 +202,16 @@ module l2_cache #(
             install_pending_valid <= 1'b0;
             install_pending_paddr <= '0;
             install_pending_block <= '0;
+            data_rd_pending <= 1'b0;
+            data_rd_kind    <= DATA_RD_NONE;
+            data_rd_index   <= '0;
+            data_rd_way     <= '0;
+            data_rd_paddr   <= '0;
+            data_rd_wb_paddr <= '0;
+            data_rd_new_tag <= '0;
+            data_rd_new_line <= '0;
+            for (int w = 0; w < L2_WAYS; w++)
+                set_read_data[w] <= '0;
 
             // Reset writeback FIFO
             wb_head  <= '0;
@@ -198,7 +224,6 @@ module l2_cache #(
             l1_data_valid <= 1'b0;
             wb_push       = 1'b0;
             wb_pop        = 1'b0;
-
             // check if MSHR response from mem (on next cycle we cna add it ito the cache)
             if (mem_resp_valid) begin
                 for (int i = 0; i < NUM_MSHRS; i++) begin
@@ -209,8 +234,58 @@ module l2_cache #(
                 end
             end
 
+            if (data_rd_pending) begin
+                if (data_rd_kind == DATA_RD_REQ_HIT) begin
+                    l1_data_valid <= 1'b1;
+                    l1_data_paddr <= data_rd_paddr;
+                    l1_data       <= set_read_data[data_rd_way];
+                    for (int i = 0; i < L2_WAYS; i++) begin
+                        lru_matrix[data_rd_index][data_rd_way][i] <= 1'b1;
+                        lru_matrix[data_rd_index][i][data_rd_way] <= 1'b0;
+                    end
+                    req_pending_valid <= 1'b0;
+                end else if (data_rd_kind == DATA_RD_WB_EVICT) begin
+                    wb_push       = 1'b1;
+                    wb_push_paddr = data_rd_wb_paddr;
+                    wb_push_data  = set_read_data[data_rd_way];
 
-            if (l1_wb_valid) begin // if on the writeback, then it is a write. 
+                    set_contents[data_rd_way][data_rd_index] <= data_rd_new_line;
+                    tags[data_rd_index][data_rd_way]         <= data_rd_new_tag;
+                    set_valids[data_rd_index][data_rd_way]   <= 1'b1;
+                    set_dirty[data_rd_index][data_rd_way]    <= 1'b1;
+
+                    for (int i = 0; i < L2_WAYS; i++) begin
+                        lru_matrix[data_rd_index][data_rd_way][i] <= 1'b1;
+                        lru_matrix[data_rd_index][i][data_rd_way] <= 1'b0;
+                    end
+                    l1_wb_ack <= 1'b1;
+                end else if (data_rd_kind == DATA_RD_FILL_EVICT) begin
+                    wb_push       = 1'b1;
+                    wb_push_paddr = data_rd_wb_paddr;
+                    wb_push_data  = set_read_data[data_rd_way];
+
+                    set_contents[data_rd_way][data_rd_index] <= data_rd_new_line;
+                    tags[data_rd_index][data_rd_way]         <= data_rd_new_tag;
+                    set_valids[data_rd_index][data_rd_way]   <= 1'b1;
+                    set_dirty[data_rd_index][data_rd_way]    <= 1'b0;
+
+                    for (int i = 0; i < L2_WAYS; i++) begin
+                        lru_matrix[data_rd_index][data_rd_way][i] <= 1'b1;
+                        lru_matrix[data_rd_index][i][data_rd_way] <= 1'b0;
+                    end
+
+                    l1_data_valid <= 1'b1;
+                    l1_data_paddr <= data_rd_paddr;
+                    l1_data       <= data_rd_new_line;
+                    install_pending_valid <= 1'b0;
+                end
+
+                data_rd_pending <= 1'b0;
+                data_rd_kind    <= DATA_RD_NONE;
+            end
+
+
+            if (!data_rd_pending && l1_wb_valid) begin // if on the writeback, then it is a write. 
                 // handle writeback. 
                 // get tag of writeback
                 wb_hit = 1'b0;
@@ -263,23 +338,32 @@ module l2_cache #(
                     // if wb is full, then we do nothing (no ack on the l1 so l1 holds val)
                     if (!(wb_victim_dirty && wb_full)) begin
                         if (wb_victim_dirty) begin // if dirty add to buffer
-                            wb_push       = 1'b1;
-                            wb_push_paddr = {tags[wb_index_in][wb_victim_way], wb_index_in, {OFFSET_BITS{1'b0}}};
-                            wb_push_data  = set_contents[wb_victim_way][wb_index_in];
+                            for (int w = 0; w < L2_WAYS; w++)
+                                set_read_data[w] <= set_contents[w][wb_index_in];
+                            data_rd_pending <= 1'b1;
+                            data_rd_kind    <= DATA_RD_WB_EVICT;
+                            data_rd_index   <= wb_index_in;
+                            data_rd_way     <= wb_victim_way;
+                            data_rd_paddr   <= '0;
+                            data_rd_wb_paddr <= {tags[wb_index_in][wb_victim_way], wb_index_in, {OFFSET_BITS{1'b0}}};
+                            data_rd_new_tag <= wb_tag_in;
+                            data_rd_new_line <= l1_wb_data;
                         end
 
-                        // now that the dirty is saved we can update the way with wb data. 
-                        set_contents[wb_victim_way][wb_index_in] <= l1_wb_data;
-                        tags[wb_index_in][wb_victim_way]         <= wb_tag_in;
-                        set_valids[wb_index_in][wb_victim_way]   <= 1'b1;
-                        set_dirty[wb_index_in][wb_victim_way]    <= 1'b1;
+                        if (!wb_victim_dirty) begin
+                            // now that the dirty is saved we can update the way with wb data. 
+                            set_contents[wb_victim_way][wb_index_in] <= l1_wb_data;
+                            tags[wb_index_in][wb_victim_way]         <= wb_tag_in;
+                            set_valids[wb_index_in][wb_victim_way]   <= 1'b1;
+                            set_dirty[wb_index_in][wb_victim_way]    <= 1'b1;
 
-                        // touch this new block to simulate lru 
-                        for (int i = 0; i < L2_WAYS; i++) begin
-                            lru_matrix[wb_index_in][wb_victim_way][i] <= 1'b1;
-                            lru_matrix[wb_index_in][i][wb_victim_way] <= 1'b0;
+                            // touch this new block to simulate lru 
+                            for (int i = 0; i < L2_WAYS; i++) begin
+                                lru_matrix[wb_index_in][wb_victim_way][i] <= 1'b1;
+                                lru_matrix[wb_index_in][i][wb_victim_way] <= 1'b0;
+                            end
+                            l1_wb_ack <= 1'b1;
                         end
-                        l1_wb_ack <= 1'b1;
                     end    
                     
                 end
@@ -302,7 +386,7 @@ module l2_cache #(
             end
 
             // Stage 2: install the captured fill on the following cycle.
-            if (install_pending_valid) begin
+            if (!data_rd_pending && install_pending_valid) begin
                 mshr_inst_index = install_pending_paddr[OFFSET_BITS +: INDEX_BITS];
                 mshr_inst_tag   = install_pending_paddr[PA_WIDTH-1 -: TAG_SIZE];
 
@@ -334,26 +418,35 @@ module l2_cache #(
 
                 if (!(mshr_inst_victim_dirty && wb_full)) begin
                     if (mshr_inst_victim_dirty) begin
-                        wb_push       = 1'b1;
-                        wb_push_paddr = {tags[mshr_inst_index][mshr_inst_victim], mshr_inst_index, {OFFSET_BITS{1'b0}}};
-                        wb_push_data  = set_contents[mshr_inst_victim][mshr_inst_index];
+                        for (int w = 0; w < L2_WAYS; w++)
+                            set_read_data[w] <= set_contents[w][mshr_inst_index];
+                        data_rd_pending <= 1'b1;
+                        data_rd_kind    <= DATA_RD_FILL_EVICT;
+                        data_rd_index   <= mshr_inst_index;
+                        data_rd_way     <= mshr_inst_victim;
+                        data_rd_paddr   <= install_pending_paddr;
+                        data_rd_wb_paddr <= {tags[mshr_inst_index][mshr_inst_victim], mshr_inst_index, {OFFSET_BITS{1'b0}}};
+                        data_rd_new_tag <= mshr_inst_tag;
+                        data_rd_new_line <= install_pending_block;
                     end
 
-                    set_contents[mshr_inst_victim][mshr_inst_index] <= install_pending_block;
-                    tags[mshr_inst_index][mshr_inst_victim]         <= mshr_inst_tag;
-                    set_valids[mshr_inst_index][mshr_inst_victim]   <= 1'b1;
-                    set_dirty[mshr_inst_index][mshr_inst_victim]    <= 1'b0; // clean fill
+                    if (!mshr_inst_victim_dirty) begin
+                        set_contents[mshr_inst_victim][mshr_inst_index] <= install_pending_block;
+                        tags[mshr_inst_index][mshr_inst_victim]         <= mshr_inst_tag;
+                        set_valids[mshr_inst_index][mshr_inst_victim]   <= 1'b1;
+                        set_dirty[mshr_inst_index][mshr_inst_victim]    <= 1'b0; // clean fill
 
-                    for (int k = 0; k < L2_WAYS; k++) begin
-                        lru_matrix[mshr_inst_index][mshr_inst_victim][k] <= 1'b1;
-                        lru_matrix[mshr_inst_index][k][mshr_inst_victim] <= 1'b0;
+                        for (int k = 0; k < L2_WAYS; k++) begin
+                            lru_matrix[mshr_inst_index][mshr_inst_victim][k] <= 1'b1;
+                            lru_matrix[mshr_inst_index][k][mshr_inst_victim] <= 1'b0;
+                        end
+
+                        // return to L1
+                        l1_data_valid <= 1'b1;
+                        l1_data_paddr <= install_pending_paddr;
+                        l1_data       <= install_pending_block;
+                        install_pending_valid <= 1'b0;
                     end
-
-                    // return to L1
-                    l1_data_valid <= 1'b1;
-                    l1_data_paddr <= install_pending_paddr;
-                    l1_data       <= install_pending_block;
-                    install_pending_valid <= 1'b0;
                 end
             end
 
@@ -362,7 +455,7 @@ module l2_cache #(
 
 
 
-            if (req_pending_valid) begin // handle the registered L1 request
+            if (!data_rd_pending && req_pending_valid) begin // handle the registered L1 request
                 // find it in l1 
                 req_hit = 1'b0;
                 req_hit_way = '0;
@@ -374,16 +467,16 @@ module l2_cache #(
                 end
 
                 if (req_hit) begin
-                    // send the output back on wires. 
-                    l1_data_valid <= 1'b1;
-                    l1_data_paddr <= req_pending_paddr;
-                    l1_data       <= set_contents[req_hit_way][req_index];
-                    // update LRU
-                    for (int i = 0; i < L2_WAYS; i++) begin
-                        lru_matrix[req_index][req_hit_way][i] <= 1'b1;
-                        lru_matrix[req_index][i][req_hit_way] <= 1'b0;
-                    end
-                    req_pending_valid <= 1'b0;
+                    for (int w = 0; w < L2_WAYS; w++)
+                        set_read_data[w] <= set_contents[w][req_index];
+                    data_rd_pending <= 1'b1;
+                    data_rd_kind    <= DATA_RD_REQ_HIT;
+                    data_rd_index   <= req_index;
+                    data_rd_way     <= req_hit_way;
+                    data_rd_paddr   <= req_pending_paddr;
+                    data_rd_wb_paddr <= '0;
+                    data_rd_new_tag <= '0;
+                    data_rd_new_line <= '0;
                 end
                 else begin
                     // miss — check for duplicate, then allocate MSHR
