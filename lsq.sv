@@ -183,8 +183,8 @@ module lsq #(
     // Blocks a load from issuing if any older store has an unknown address.
     // =========================================================================
     logic is_unresolved_load;
-    logic unresolved_val_store;
-    logic terminate_loop;
+    // logic unresolved_val_store;
+    // logic terminate_loop;
 
     always_comb begin
         is_unresolved_load = 1'b0;
