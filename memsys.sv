@@ -40,6 +40,7 @@ module memory_subsystem #(
     input  logic [1:0]       trace_addr,
     input  logic [31:0]      trace_data,
     input  logic             trace_valid,
+    input  logic             trace_write,
     output logic             trace_ready,
 
     // TO SDRAM PORTS
@@ -65,18 +66,18 @@ module memory_subsystem #(
 
     logic [TRACE_WIDTH-1:0] trace_line;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        trace_line <= '0;
-    end else begin
-        case (trace_addr)
-            2'd0: trace_line[31:0]   <= trace_data;
-            2'd1: trace_line[63:32]  <= trace_data;
-            2'd2: trace_line[95:64]  <= trace_data;
-            2'd3: trace_line[120:96] <= trace_data[24:0];
-        endcase
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            trace_line <= '0;
+        end else if (trace_write) begin       // ← only write when pulsed
+            case (trace_addr)
+                2'd0: trace_line[31:0]   <= trace_data;
+                2'd1: trace_line[63:32]  <= trace_data;
+                2'd2: trace_line[95:64]  <= trace_data;
+                2'd3: trace_line[120:96] <= trace_data[24:0];
+            endcase
+        end
     end
-end
     
 
     // Operation types
@@ -144,11 +145,7 @@ end
     // Gate L1 start_index so it doesn't fire during a TLB fill collision
     wire l1_start_from_lsq = launch_issue_now;
 
-    assign trace_ready = is_tlb_fill ? tlb_ready
-                       : is_load     ? lsq_lq_ready
-                       : is_store    ? lsq_sq_ready
-                       : is_resolve  ? 1'b1
-                       :               1'b0;
+    assign trace_ready = is_tlb_fill ? tlb_ready : (is_load ? lsq_lq_ready : (is_store ? lsq_sq_ready : (is_resolve  ? 1'b1 : 1'b0)));
 
     // L1 <-> L2 signals.
     logic                       l1_l2_wb_valid;
