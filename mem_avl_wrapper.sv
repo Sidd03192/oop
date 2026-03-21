@@ -60,6 +60,11 @@ module memory_subsystem_avl_wrapper #(
             // Default: pulse is only high for one cycle
             trace_data_write_pulse <= 1'b0;
 
+            // Auto-clear the software request once the memsys handshake occurs
+            // so one MMIO "valid=1" write can only submit one trace record.
+            if (trace_valid_reg && trace_ready_wire)
+                trace_valid_reg <= 1'b0;
+
             if (avs_write) begin
                 case (avs_address)
                     2'd0: trace_addr_reg  <= avs_writedata[1:0];  // step 1
