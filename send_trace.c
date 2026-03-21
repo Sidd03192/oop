@@ -95,9 +95,6 @@ static void wait_for_ready(void *trace_base)
  */
 static void send_trace_record(void *trace_base, const uint32_t chunk[4])
 {
-    printf("Waiting for ready\n");
-    /* ── Step 1: wait for hardware to be ready ───────────────────────── */
-    wait_for_ready(trace_base);
 
     /* ── Step 2: load all four chunks (trace_valid stays 0) ─────────── */
     for (uint8_t addr = 0; addr < CHUNKS_PER_TRACE; addr++) {
@@ -127,7 +124,9 @@ static void send_trace_record(void *trace_base, const uint32_t chunk[4])
     /* ── Step 3: assert trace_valid — triggers trace_fire in RTL ─────── */
     mmio_write(trace_base, OFF_TRACE_VALID, 1u);
 
-    usleep(1);
+     printf("Waiting for ready\n");
+    /* ── Step 1: wait for hardware to be ready ───────────────────────── */
+    wait_for_ready(trace_base);
 
     printf("De-asserting valid\n");
     /* ── Step 5: de-assert trace_valid ──────────────────────────────── */
