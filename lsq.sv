@@ -252,7 +252,11 @@ module lsq #(
             if (valid_in && op == LOAD) begin
                 lq_vaddr[lq_tail]  <= vaddr_in;
                 lq_id[lq_tail]     <= id_in;
-                lq_state[lq_tail]  <= vaddr_ready ? LQ_WAITING_ISSUE : LQ_WAITING_ADDR;
+                if (vaddr_ready) begin
+                    lq_state[lq_tail] <= LQ_WAITING_ISSUE;
+                end else begin
+                    lq_state[lq_tail] <= LQ_WAITING_ADDR;
+                end
                 lq_sq_idx[lq_tail] <= (sq_head == sq_tail) ? (sq_ready ? sq_head : sq_tail - 1) : sq_tail - 1;  
                 for (int i = 0; i < SQ_ENTRIES; i++) begin
                     logic [SQ_PTR_WIDTH-1:0] idx;
@@ -266,8 +270,19 @@ module lsq #(
                 sq_vaddr[sq_tail]      <= vaddr_in;
                 sq_wdata[sq_tail]      <= wdata_in;
                 sq_id[sq_tail]         <= id_in;
-                sq_state[sq_tail]      <= wdata_ready ? (vaddr_ready ? SQ_WAITING_ISSUE : SQ_WAITING_ADDR) 
-                                                      : (vaddr_ready ? SQ_WAITING_DATA : SQ_UNRESOLVED);
+                if (wdata_ready) begin
+                    if (vaddr_ready) begin
+                        sq_state[sq_tail] <= SQ_WAITING_ISSUE;
+                    end else begin
+                        sq_state[sq_tail] <= SQ_WAITING_ADDR;
+                    end
+                end else begin
+                    if (vaddr_ready) begin
+                        sq_state[sq_tail] <= SQ_WAITING_DATA;
+                    end else begin
+                        sq_state[sq_tail] <= SQ_UNRESOLVED;
+                    end
+                end
                 for (int i = 0; i < LQ_ENTRIES; i++) begin
                     logic [LQ_PTR_WIDTH-1:0] idx;
                     idx = lq_head + i[LQ_PTR_WIDTH - 1:0];

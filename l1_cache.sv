@@ -82,6 +82,8 @@ logic [BLOCK_SIZE*8-1:0] mshr_block    [NUM_MSHRS];
 logic [WORDS_PER_BLOCK-1:0] mshr_store_mask [NUM_MSHRS];
 logic [BLOCK_SIZE*8-1:0]    mshr_store_data [NUM_MSHRS];
 logic [BLOCK_SIZE*8-1:0] install_block;
+logic                         mshr_full;
+logic [$clog2(NUM_MSHRS)-1:0] mshr_free_idx;
 
 localparam [1:0] MS_IDLE       = 2'b00;  // free
 localparam [1:0] MS_UNRESOLVED = 2'b01;  // waiting for L2
@@ -137,9 +139,6 @@ end
 // ------------------
 
 ///////////////////// Combinational logic to find empty spot in MSHR
-logic                         mshr_full; // if full 
-logic [$clog2(NUM_MSHRS)-1:0] mshr_free_idx; // index of free spot. 
-
 always_comb begin
     mshr_full     = 1'b1;
     mshr_free_idx = '0;
@@ -360,5 +359,4 @@ end
     
 
 endmodule
-
 
