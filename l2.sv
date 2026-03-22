@@ -124,6 +124,7 @@ module l2_cache #(
     // =========================================================================
     logic [INDEX_BITS-1:0] ram_rd_addr;
     logic [LINE_W-1:0]     ram_rd_data [L2_WAYS];
+    logic [LINE_W-1:0]     set_contents [L2_WAYS][L2_SETS];
 
     logic                  ram_wr_en   [L2_WAYS];
     logic [INDEX_BITS-1:0] ram_wr_addr [L2_WAYS];
@@ -150,6 +151,16 @@ module l2_cache #(
         if (ram_wr_en[3]) way_ram_3[ram_wr_addr[3]] <= ram_wr_data[3];
         ram_rd_data[3] <= way_ram_3[ram_rd_addr];
     end
+
+    genvar set_gen;
+    generate
+        for (set_gen = 0; set_gen < L2_SETS; set_gen = set_gen + 1) begin : gen_set_contents
+            assign set_contents[0][set_gen] = way_ram_0[set_gen];
+            assign set_contents[1][set_gen] = way_ram_1[set_gen];
+            assign set_contents[2][set_gen] = way_ram_2[set_gen];
+            assign set_contents[3][set_gen] = way_ram_3[set_gen];
+        end
+    endgenerate
 
     // =========================================================================
     // MSHR
@@ -201,7 +212,7 @@ module l2_cache #(
 
     logic wb_empty, wb_full;
     assign wb_empty = (wb_count == '0);
-    assign wb_full  = (wb_count == WB_PTR_W'(WB_DEPTH));
+    assign wb_full  = (wb_count == WB_DEPTH);
 
     // =========================================================================
     // Address decode
@@ -378,8 +389,11 @@ module l2_cache #(
             end
 
         end else begin
+            logic control_taken;
+
             l1_wb_ack     <= 1'b0;
             l1_data_valid <= 1'b0;
+            control_taken = 1'b0;
 
             // ------------------------------------------------------------------
             // Memory response → MSHR
@@ -394,9 +408,14 @@ module l2_cache #(
             end
 
             // ------------------------------------------------------------------
-            // data_rd_pending resolution
-            // RAM data (ram_rd_data[]) is valid this cycle (registered last cycle).
-            // RAM writes for this cycle are handled combinationally above.
+            // Single-issue internal pipeline control
+            // Priority:
+            //   1) resolve current data_rd_pending
+            //   2) handle one L1 writeback action
+            //   3) capture one MS_RESOLVED MSHR
+            //   4) process one install_pending fill
+            //   5) process one req_pending request
+            //   6) latch one new L1 request
             // ------------------------------------------------------------------
             if (data_rd_pending) begin
                 case (data_rd_kind)
@@ -410,34 +429,30 @@ module l2_cache #(
                     end
 
                     DATA_RD_WB_EVICT: begin
-                        // RAM write (new line install) done combinationally.
-                        // Push evicted dirty line into WB FIFO.
-                        wb_paddr_q[wb_tail]            <= data_rd_wb_paddr;
-                        wb_data_q[wb_tail]             <= ram_rd_data[data_rd_way];
-                        wb_tail                        <= wb_tail + 1'b1;
-                        wb_count                       <= wb_count + 1'b1;
-                        tags[data_rd_index][data_rd_way]       <= data_rd_new_tag;
+                        wb_paddr_q[wb_tail]                  <= data_rd_wb_paddr;
+                        wb_data_q[wb_tail]                   <= ram_rd_data[data_rd_way];
+                        wb_tail                              <= wb_tail + 1'b1;
+                        wb_count                             <= wb_count + 1'b1;
+                        tags[data_rd_index][data_rd_way]     <= data_rd_new_tag;
                         set_valids[data_rd_index][data_rd_way] <= 1'b1;
                         set_dirty[data_rd_index][data_rd_way]  <= 1'b1;
-                        plru[data_rd_index] <= plru_update(plru[data_rd_index], data_rd_way);
-                        l1_wb_ack <= 1'b1;
+                        plru[data_rd_index]                  <= plru_update(plru[data_rd_index], data_rd_way);
+                        l1_wb_ack                            <= 1'b1;
                     end
 
                     DATA_RD_FILL_EVICT: begin
-                        // RAM write (new fill install) done combinationally.
-                        // Push evicted dirty line into WB FIFO.
-                        wb_paddr_q[wb_tail]            <= data_rd_wb_paddr;
-                        wb_data_q[wb_tail]             <= ram_rd_data[data_rd_way];
-                        wb_tail                        <= wb_tail + 1'b1;
-                        wb_count                       <= wb_count + 1'b1;
-                        tags[data_rd_index][data_rd_way]       <= data_rd_new_tag;
+                        wb_paddr_q[wb_tail]                  <= data_rd_wb_paddr;
+                        wb_data_q[wb_tail]                   <= ram_rd_data[data_rd_way];
+                        wb_tail                              <= wb_tail + 1'b1;
+                        wb_count                             <= wb_count + 1'b1;
+                        tags[data_rd_index][data_rd_way]     <= data_rd_new_tag;
                         set_valids[data_rd_index][data_rd_way] <= 1'b1;
                         set_dirty[data_rd_index][data_rd_way]  <= 1'b0;
-                        plru[data_rd_index] <= plru_update(plru[data_rd_index], data_rd_way);
-                        l1_data_valid         <= 1'b1;
-                        l1_data_paddr         <= data_rd_paddr;
-                        l1_data               <= data_rd_new_line;
-                        install_pending_valid <= 1'b0;
+                        plru[data_rd_index]                  <= plru_update(plru[data_rd_index], data_rd_way);
+                        l1_data_valid                        <= 1'b1;
+                        l1_data_paddr                        <= data_rd_paddr;
+                        l1_data                              <= data_rd_new_line;
+                        install_pending_valid                <= 1'b0;
                     end
 
                     default: ;
@@ -445,159 +460,150 @@ module l2_cache #(
 
                 data_rd_pending <= 1'b0;
                 data_rd_kind    <= DATA_RD_NONE;
-            end
+                control_taken   = 1'b1;
+            end else begin
+                if (!control_taken && l1_wb_valid) begin
+                    logic                wb_hit;
+                    logic [WAY_BITS-1:0] wb_hit_way;
 
-            // ------------------------------------------------------------------
-            // L1 writeback
-            // ------------------------------------------------------------------
-            if (!data_rd_pending && l1_wb_valid) begin
-                logic                wb_hit;
-                logic [WAY_BITS-1:0] wb_hit_way;
-                wb_hit     = 1'b0;
-                wb_hit_way = '0;
-                for (int w = 0; w < L2_WAYS; w++) begin
-                    if (set_valids[wb_index_in][w] && tags[wb_index_in][w] == wb_tag_in) begin
-                        wb_hit     = 1'b1;
-                        wb_hit_way = WAY_BITS'(w);
-                    end
-                end
-
-                if (wb_hit) begin
-                    // RAM write done combinationally; update metadata
-                    set_dirty[wb_index_in][wb_hit_way]  <= 1'b1;
-                    plru[wb_index_in] <= plru_update(plru[wb_index_in], wb_hit_way);
-                    l1_wb_ack <= 1'b1;
-                end else if (!(victim_dirty && wb_full)) begin
-                    if (victim_dirty) begin
-                        // Need to read victim before evicting — stall one cycle
-                        data_rd_pending  <= 1'b1;
-                        data_rd_kind     <= DATA_RD_WB_EVICT;
-                        data_rd_index    <= wb_index_in;
-                        data_rd_way      <= victim_way;
-                        data_rd_paddr    <= '0;
-                        data_rd_wb_paddr <= {tags[wb_index_in][victim_way],
-                                             wb_index_in, {OFFSET_BITS{1'b0}}};
-                        data_rd_new_tag  <= wb_tag_in;
-                        data_rd_new_line <= l1_wb_data;
-                        // ram_rd_addr already points at wb_index_in this cycle
-                    end else begin
-                        // Clean victim: RAM write done combinationally; update metadata
-                        tags[wb_index_in][victim_way]       <= wb_tag_in;
-                        set_valids[wb_index_in][victim_way] <= 1'b1;
-                        set_dirty[wb_index_in][victim_way]  <= 1'b1;
-                        plru[wb_index_in] <= plru_update(plru[wb_index_in], victim_way);
-                        l1_wb_ack <= 1'b1;
-                    end
-                end
-                // wb_full && victim_dirty: stall silently, L1 retries
-            end
-
-            // ------------------------------------------------------------------
-            // Stage 1: capture one MS_RESOLVED MSHR
-            // ------------------------------------------------------------------
-            if (!install_pending_valid) begin
-                logic install_done;
-                install_done = 1'b0;
-                for (int i = 0; i < NUM_MSHRS; i++) begin
-                    if (!install_done && mshr_state[i] == MS_RESOLVED) begin
-                        install_pending_valid <= 1'b1;
-                        install_pending_paddr <= mshr_paddr[i];
-                        install_pending_block <= mshr_block[i];
-                        mshr_state[i]         <= MS_IDLE;
-                        mshr_mem_issued[i]    <= 1'b0;
-                        install_done           = 1'b1;
-                    end
-                end
-            end
-
-            // ------------------------------------------------------------------
-            // Stage 2: install the captured fill
-            // ------------------------------------------------------------------
-            if (!data_rd_pending && install_pending_valid) begin
-                logic [INDEX_BITS-1:0] inst_index;
-                logic [TAG_SIZE-1:0]   inst_tag;
-                inst_index = install_pending_paddr[OFFSET_BITS +: INDEX_BITS];
-                inst_tag   = install_pending_paddr[PA_WIDTH-1 -: TAG_SIZE];
-
-                if (!(victim_dirty && wb_full)) begin
-                    if (victim_dirty) begin
-                        data_rd_pending  <= 1'b1;
-                        data_rd_kind     <= DATA_RD_FILL_EVICT;
-                        data_rd_index    <= inst_index;
-                        data_rd_way      <= victim_way;
-                        data_rd_paddr    <= install_pending_paddr;
-                        data_rd_wb_paddr <= {tags[inst_index][victim_way],
-                                             inst_index, {OFFSET_BITS{1'b0}}};
-                        data_rd_new_tag  <= inst_tag;
-                        data_rd_new_line <= install_pending_block;
-                    end else begin
-                        // RAM write done combinationally; update metadata
-                        tags[inst_index][victim_way]       <= inst_tag;
-                        set_valids[inst_index][victim_way] <= 1'b1;
-                        set_dirty[inst_index][victim_way]  <= 1'b0;
-                        plru[inst_index] <= plru_update(plru[inst_index], victim_way);
-                        l1_data_valid         <= 1'b1;
-                        l1_data_paddr         <= install_pending_paddr;
-                        l1_data               <= install_pending_block;
-                        install_pending_valid <= 1'b0;
-                    end
-                end
-            end
-
-            // ------------------------------------------------------------------
-            // L1 request handling
-            // ------------------------------------------------------------------
-            if (!data_rd_pending && req_pending_valid) begin
-                logic                req_hit;
-                logic [WAY_BITS-1:0] req_hit_way;
-                logic                mshr_dup, mshr_full_l2;
-                logic [$clog2(NUM_MSHRS)-1:0] mshr_free_idx;
-
-                req_hit     = 1'b0;
-                req_hit_way = '0;
-                for (int w = 0; w < L2_WAYS; w++) begin
-                    if (set_valids[req_index][w] && tags[req_index][w] == req_tag) begin
-                        req_hit     = 1'b1;
-                        req_hit_way = WAY_BITS'(w);
-                    end
-                end
-
-                if (req_hit) begin
-                    data_rd_pending  <= 1'b1;
-                    data_rd_kind     <= DATA_RD_REQ_HIT;
-                    data_rd_index    <= req_index;
-                    data_rd_way      <= req_hit_way;
-                    data_rd_paddr    <= req_pending_paddr;
-                    data_rd_wb_paddr <= '0;
-                    data_rd_new_tag  <= '0;
-                    data_rd_new_line <= '0;
-                end else begin
-                    mshr_dup      = 1'b0;
-                    mshr_full_l2  = 1'b1;
-                    mshr_free_idx = '0;
-                    for (int i = 0; i < NUM_MSHRS; i++) begin
-                        if (mshr_state[i] != MS_IDLE && mshr_paddr[i] == req_pending_paddr)
-                            mshr_dup = 1'b1;
-                        if (mshr_state[i] == MS_IDLE && mshr_full_l2) begin
-                            mshr_full_l2  = 1'b0;
-                            mshr_free_idx = i[$clog2(NUM_MSHRS)-1:0];
+                    wb_hit     = 1'b0;
+                    wb_hit_way = '0;
+                    for (int w = 0; w < L2_WAYS; w++) begin
+                        if (set_valids[wb_index_in][w] && tags[wb_index_in][w] == wb_tag_in) begin
+                            wb_hit     = 1'b1;
+                            wb_hit_way = WAY_BITS'(w);
                         end
                     end
-                    if (!mshr_dup && !mshr_full_l2) begin
-                        mshr_state[mshr_free_idx]      <= MS_UNRESOLVED;
-                        mshr_paddr[mshr_free_idx]      <= req_pending_paddr;
-                        mshr_mem_issued[mshr_free_idx] <= 1'b0;
-                        req_pending_valid              <= 1'b0;
-                    end else if (mshr_dup) begin
-                        req_pending_valid <= 1'b0;
+
+                    if (wb_hit) begin
+                        set_dirty[wb_index_in][wb_hit_way] <= 1'b1;
+                        plru[wb_index_in]                  <= plru_update(plru[wb_index_in], wb_hit_way);
+                        l1_wb_ack                          <= 1'b1;
+                        control_taken                      = 1'b1;
+                    end else if (!(victim_dirty && wb_full)) begin
+                        if (victim_dirty) begin
+                            data_rd_pending  <= 1'b1;
+                            data_rd_kind     <= DATA_RD_WB_EVICT;
+                            data_rd_index    <= wb_index_in;
+                            data_rd_way      <= victim_way;
+                            data_rd_paddr    <= '0;
+                            data_rd_wb_paddr <= {tags[wb_index_in][victim_way],
+                                                 wb_index_in, {OFFSET_BITS{1'b0}}};
+                            data_rd_new_tag  <= wb_tag_in;
+                            data_rd_new_line <= l1_wb_data;
+                        end else begin
+                            tags[wb_index_in][victim_way]       <= wb_tag_in;
+                            set_valids[wb_index_in][victim_way] <= 1'b1;
+                            set_dirty[wb_index_in][victim_way]  <= 1'b1;
+                            plru[wb_index_in]                   <= plru_update(plru[wb_index_in], victim_way);
+                            l1_wb_ack                           <= 1'b1;
+                        end
+                        control_taken = 1'b1;
                     end
                 end
-            end
 
-            // Accept new L1 request
-            if (!req_pending_valid && l1_req_valid) begin
-                req_pending_valid <= 1'b1;
-                req_pending_paddr <= l1_req_paddr;
+                if (!control_taken && !install_pending_valid) begin
+                    logic install_done;
+
+                    install_done = 1'b0;
+                    for (int i = 0; i < NUM_MSHRS; i++) begin
+                        if (!install_done && mshr_state[i] == MS_RESOLVED) begin
+                            install_pending_valid <= 1'b1;
+                            install_pending_paddr <= mshr_paddr[i];
+                            install_pending_block <= mshr_block[i];
+                            mshr_state[i]         <= MS_IDLE;
+                            mshr_mem_issued[i]    <= 1'b0;
+                            install_done          = 1'b1;
+                            control_taken         = 1'b1;
+                        end
+                    end
+                end
+
+                if (!control_taken && install_pending_valid) begin
+                    logic [INDEX_BITS-1:0] inst_index;
+                    logic [TAG_SIZE-1:0]   inst_tag;
+
+                    inst_index = install_pending_paddr[OFFSET_BITS +: INDEX_BITS];
+                    inst_tag   = install_pending_paddr[PA_WIDTH-1 -: TAG_SIZE];
+                    control_taken = 1'b1;
+
+                    if (!(victim_dirty && wb_full)) begin
+                        if (victim_dirty) begin
+                            data_rd_pending  <= 1'b1;
+                            data_rd_kind     <= DATA_RD_FILL_EVICT;
+                            data_rd_index    <= inst_index;
+                            data_rd_way      <= victim_way;
+                            data_rd_paddr    <= install_pending_paddr;
+                            data_rd_wb_paddr <= {tags[inst_index][victim_way],
+                                                 inst_index, {OFFSET_BITS{1'b0}}};
+                            data_rd_new_tag  <= inst_tag;
+                            data_rd_new_line <= install_pending_block;
+                        end else begin
+                            tags[inst_index][victim_way]       <= inst_tag;
+                            set_valids[inst_index][victim_way] <= 1'b1;
+                            set_dirty[inst_index][victim_way]  <= 1'b0;
+                            plru[inst_index]                   <= plru_update(plru[inst_index], victim_way);
+                            l1_data_valid                      <= 1'b1;
+                            l1_data_paddr                      <= install_pending_paddr;
+                            l1_data                            <= install_pending_block;
+                            install_pending_valid              <= 1'b0;
+                        end
+                    end
+                end
+
+                if (!control_taken && req_pending_valid) begin
+                    logic                req_hit;
+                    logic [WAY_BITS-1:0] req_hit_way;
+                    logic                mshr_dup, mshr_full_l2;
+                    logic [$clog2(NUM_MSHRS)-1:0] mshr_free_idx;
+
+                    req_hit     = 1'b0;
+                    req_hit_way = '0;
+                    for (int w = 0; w < L2_WAYS; w++) begin
+                        if (set_valids[req_index][w] && tags[req_index][w] == req_tag) begin
+                            req_hit     = 1'b1;
+                            req_hit_way = WAY_BITS'(w);
+                        end
+                    end
+
+                    control_taken = 1'b1;
+                    if (req_hit) begin
+                        data_rd_pending  <= 1'b1;
+                        data_rd_kind     <= DATA_RD_REQ_HIT;
+                        data_rd_index    <= req_index;
+                        data_rd_way      <= req_hit_way;
+                        data_rd_paddr    <= req_pending_paddr;
+                        data_rd_wb_paddr <= '0;
+                        data_rd_new_tag  <= '0;
+                        data_rd_new_line <= '0;
+                    end else begin
+                        mshr_dup      = 1'b0;
+                        mshr_full_l2  = 1'b1;
+                        mshr_free_idx = '0;
+                        for (int i = 0; i < NUM_MSHRS; i++) begin
+                            if (mshr_state[i] != MS_IDLE && mshr_paddr[i] == req_pending_paddr)
+                                mshr_dup = 1'b1;
+                            if (mshr_state[i] == MS_IDLE && mshr_full_l2) begin
+                                mshr_full_l2  = 1'b0;
+                                mshr_free_idx = i[$clog2(NUM_MSHRS)-1:0];
+                            end
+                        end
+                        if (!mshr_dup && !mshr_full_l2) begin
+                            mshr_state[mshr_free_idx]      <= MS_UNRESOLVED;
+                            mshr_paddr[mshr_free_idx]      <= req_pending_paddr;
+                            mshr_mem_issued[mshr_free_idx] <= 1'b0;
+                            req_pending_valid              <= 1'b0;
+                        end else if (mshr_dup) begin
+                            req_pending_valid <= 1'b0;
+                        end
+                    end
+                end
+
+                if (!control_taken && !req_pending_valid && l1_req_valid) begin
+                    req_pending_valid <= 1'b1;
+                    req_pending_paddr <= l1_req_paddr;
+                    control_taken     = 1'b1;
+                end
             end
 
             // ------------------------------------------------------------------

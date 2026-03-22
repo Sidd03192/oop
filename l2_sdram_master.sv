@@ -120,7 +120,11 @@ module l2_sdram_master (
                     if (req_valid) begin
                         r_addr <= {2'b0, req_addr[29:6], 3'b0};
                         paddr_out <= req_addr;
-                        state  <= req_wr ? S_WRITE_CMD : S_READ_CMD;
+                        if (req_wr) begin
+                            state <= S_WRITE_CMD;
+                        end else begin
+                            state <= S_READ_CMD;
+                        end
                     end
                 end
 

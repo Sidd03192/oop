@@ -103,17 +103,28 @@ module memory_subsystem_avl_wrapper #(
         .L1_MSHRS      (L1_MSHRS),
         .L2_CAPACITY   (L2_CAPACITY),
         .L2_WAYS       (L2_WAYS),
-        .L2_MSHRS      (L2_MSHRS)
+        .L2_MSHRS      (L2_MSHRS),
+        .USE_AVALON_MEM(1'b1)
     ) u_mem_subsystem (
         .clk            (clk),
         .rst_n          (rst_n),
 
         // Trace — driven by the registered Avalon writes
+        .trace_data     ('0),
         .trace_addr     (trace_addr_reg),
-        .trace_data     (trace_data_reg),
+        .trace_data_chunk(trace_data_reg),
         .trace_valid    (trace_valid_reg),
         .trace_write    (trace_data_write_pulse),
         .trace_ready    (trace_ready_wire),
+
+        .mem_req_valid  (),
+        .mem_req_is_write(),
+        .mem_req_addr   (),
+        .mem_req_wdata  (),
+        .mem_req_ready  (1'b0),
+        .mem_resp_valid (1'b0),
+        .mem_resp_paddr ('0),
+        .mem_resp_rdata ('0),
 
         // SDRAM — pass straight through to top-level ports
         .avm_address       (avm_address),
