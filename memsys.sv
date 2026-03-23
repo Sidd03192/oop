@@ -144,11 +144,12 @@ module memory_subsystem #(
     wire                     issue_buf_empty = !issue_buf_valid;
     wire                     issue_buf_is_write = (issue_buf_op == OP_MEM_STORE);
 
+    wire launch_issue_now = issue_buf_valid && !is_tlb_fill_now && !l1_busy_to_lsq && tlb_ready;
+
     // lsq only dq when empyty
     wire lsq_issue_slot_ready = issue_buf_empty;
 
 // send on ready
-    wire launch_issue_now = issue_buf_valid && !is_tlb_fill_now && !l1_busy_to_lsq && tlb_ready;
 
     wire tlb_start = is_tlb_fill_now || launch_issue_now;
 

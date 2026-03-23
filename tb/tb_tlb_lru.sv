@@ -83,6 +83,14 @@ module tb_tlb_lru;
     end
     endtask
 
+    function automatic [29:0] exp_lookup_paddr;
+        input [29:0] pa;
+        input [47:0] va;
+    begin
+        exp_lookup_paddr = {pa[29:12], va[11:0]};
+    end
+    endfunction
+
     task check_is_lru;
         input [63:0]  line_num;
         input [255:0] name;
@@ -159,8 +167,10 @@ module tb_tlb_lru;
     end
     endtask
 
-    // Lookup; sample outputs on posedge+#1, then deassert start.
-    // Checks must follow immediately with NO extra @(negedge clk).
+    // Hit-only, one-cycle-latency model:
+    //   - first posedge launches the lookup
+    //   - second posedge presents valid/result_paddr
+    // Checks must follow immediately after this task returns.
     task tlb_lookup;
         input [47:0] va;
     begin
@@ -168,10 +178,10 @@ module tb_tlb_lru;
         is_tlb_fill = 0;
         vaddr       = va;
         start       = 1;
-        @(posedge clk); #1;
         @(negedge clk);
         start = 0;
         vaddr = 0;
+        @(posedge clk); #1;
     end
     endtask
 
@@ -236,7 +246,7 @@ module tb_tlb_lru;
         begin : l4_block
             reg [29:0] exp_pa;
             tlb_lookup(VA[0]);
-            exp_pa = {PA[0][29:6], VA[0][5:0]};
+            exp_pa = exp_lookup_paddr(PA[0], VA[0]);
             check_bit(0, "L4 hit on way 0",  valid,          1'b1);
             check_vec(0, "L4 paddr correct",  result_paddr,   exp_pa);
             @(negedge clk);
@@ -373,7 +383,7 @@ module tb_tlb_lru;
             reg [29:0] exp_pa;
             for (i = 1; i <= 15; i = i + 1) begin
                 tlb_lookup(VA[i]);
-                exp_pa = {PA[i][29:6], VA[i][5:0]};
+                exp_pa = exp_lookup_paddr(PA[i], VA[i]);
                 check_bit(i, "L11 survivor hit",          valid,          1'b1);
                 check_vec(i, "L11 survivor paddr correct", result_paddr,   exp_pa);
             end

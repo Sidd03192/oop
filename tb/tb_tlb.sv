@@ -3,11 +3,11 @@
 module tb_tlb;
 
     // ── Address layout ────────────────────────────────────────────────────
-    // vaddr[47:12] = VPN (36 bits)   vaddr[5:0] = block offset
-    // paddr[29:6]  = PPN (24 bits)   paddr[5:0] = block offset
-    // ways[i] = {valid(1), PPN(24), VPN(36)} = 61 bits
-    // hit when ways[i][60]==1 && ways[i][35:0] == vaddr[47:12]
-    // result  = {ways[hit][59:36], vaddr[5:0]}
+    // vaddr[47:12] = VPN (36 bits)   vaddr[11:0] = page offset
+    // paddr[29:12] = physical tag    paddr[11:0] = page offset
+    // ways[i] = {valid(1), paddr[29:12], vaddr[47:12]} = 55 bits
+    // hit when ways[i][54]==1 && ways[i][35:0] == vaddr[47:12]
+    // result  = {ways[hit][53:36], vaddr[11:0]}
 
     // ── Test virtual addresses (distinct VPNs in [47:12]) ─────────────────
     localparam [47:0] VADDR_A     = {36'hA_BCDE_F000, 12'h000};
@@ -92,6 +92,14 @@ module tb_tlb;
     end
     endtask
 
+    function automatic [29:0] exp_lookup_paddr;
+        input [29:0] pa;
+        input [47:0] va;
+    begin
+        exp_lookup_paddr = {pa[29:12], va[11:0]};
+    end
+    endfunction
+
     // ── Idle all inputs ───────────────────────────────────────────────────
     task idle_inputs;
     begin
@@ -123,9 +131,10 @@ module tb_tlb;
     endtask
 
     // ── Perform a TLB lookup ──────────────────────────────────────────────
-    // Samples outputs on posedge (while start still high, valid/panic live)
-    // then deasserts start. Checks should run immediately after this returns
-    // with NO extra @(negedge clk) in the caller.
+    // Hit-only, one-cycle-latency model:
+    //   - first posedge launches the lookup
+    //   - second posedge presents valid/result_paddr
+    // Checks should run immediately after this returns.
     task tlb_lookup;
         input [47:0] va;
     begin
@@ -133,10 +142,10 @@ module tb_tlb;
         is_tlb_fill = 0;
         vaddr       = va;
         start       = 1;
-        @(posedge clk); #1;   // outputs (valid, panic, result_paddr) are live here
         @(negedge clk);
         start       = 0;
         vaddr       = 0;
+        @(posedge clk); #1;
     end
     endtask
 
@@ -176,8 +185,8 @@ module tb_tlb;
 
         check_bit(0, "T1 ready==1 after reset",          ready,            1'b1);
         check_bit(0, "T1 valid==0 after reset",          valid,            1'b0);
-        check_bit(0, "T1 ways[0]  valid bit clear",      dut.ways[0][60],  1'b0);
-        check_bit(0, "T1 ways[15] valid bit clear",      dut.ways[15][60], 1'b0);
+        check_bit(0, "T1 ways[0]  valid bit clear",      dut.ways[0][54],  1'b0);
+        check_bit(0, "T1 ways[15] valid bit clear",      dut.ways[15][54], 1'b0);
 
         // ─────────────────────────────────────────────────────────────────
         // T2: FILL – fill does not assert valid or panic
@@ -188,35 +197,35 @@ module tb_tlb;
 
         check_bit(0, "T2 ready==1 after fill",                      ready,           1'b1);
         check_bit(0, "T2 valid==0 after fill (no translation out)",  valid,           1'b0);
-        check_bit(0, "T2 ways[0] valid bit set",                    dut.ways[0][60], 1'b1);
+        check_bit(0, "T2 ways[0] valid bit set",                    dut.ways[0][54], 1'b1);
 
         // ─────────────────────────────────────────────────────────────────
-        // T3: LOOKUP HIT – translate VADDR_A, check PPN and offset
+        // T3: LOOKUP HIT – translate VADDR_A, check translated page+offset
         // ─────────────────────────────────────────────────────────────────
         $display("\n=== T3: Lookup hit ===");
         tlb_lookup(VADDR_A);
         // no extra @(negedge clk) — task already sampled on posedge
         check_bit(0, "T3 valid==1 on hit",      valid,          1'b1);
         check_vec(0, "T3 result_paddr correct",
-                  result_paddr, {PADDR_A[29:6], VADDR_A[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_A, VADDR_A));
 
         // ─────────────────────────────────────────────────────────────────
-        // T4: LOOKUP MISS – VPN not present, panic asserts
+        // T4: LOOKUP MISS – absent VPN produces no valid response
         // ─────────────────────────────────────────────────────────────────
         $display("\n=== T4: Lookup miss ===");
         tlb_lookup(VADDR_B);   // VADDR_B never filled
-        check_bit(0, "T4 valid==1 (lookup completed)", valid,          1'b1);
+        check_bit(0, "T4 valid==0 on miss", valid, 1'b0);
 
         // ─────────────────────────────────────────────────────────────────
-        // T5: READY handshake – deasserts while start is high
+        // T5: READY handshake – stays high while lookup is launched
         // ─────────────────────────────────────────────────────────────────
-        $display("\n=== T5: Ready deasserts during start ===");
+        $display("\n=== T5: Ready stays asserted during start ===");
         @(negedge clk);
         is_tlb_fill = 0;
         vaddr       = VADDR_A;
         start       = 1;
         @(posedge clk); #1;
-        check_bit(0, "T5 ready==0 while start is asserted", ready, 1'b0);
+        check_bit(0, "T5 ready==1 while start is asserted", ready, 1'b1);
         @(negedge clk);
         start = 0;
         vaddr = 0;
@@ -235,13 +244,13 @@ module tb_tlb;
 
         // ─────────────────────────────────────────────────────────────────
         // T7: BLOCK OFFSET PASSTHROUGH
-        // Same VPN as A, vaddr[5:0]=0x2A -> offset forwarded into paddr
+        // Same VPN as A, different page offset -> offset forwarded into paddr
         // ─────────────────────────────────────────────────────────────────
         $display("\n=== T7: Block offset passthrough ===");
         tlb_lookup(VADDR_A_OFF);
         check_bit(0, "T7 valid==1",  valid,          1'b1);
-        check_vec(0, "T7 PPN from PADDR_A with offset 0x2A",
-                  result_paddr, {PADDR_A[29:6], 6'h2A});
+        check_vec(0, "T7 translated paddr keeps offset 0x02A",
+                  result_paddr, exp_lookup_paddr(PADDR_A, VADDR_A_OFF));
 
         // ─────────────────────────────────────────────────────────────────
         // T8: MULTIPLE ENTRIES – fill B/C/D, all hit independently,
@@ -256,22 +265,22 @@ module tb_tlb;
         tlb_lookup(VADDR_B);
         check_bit(0, "T8 VADDR_B hit",      valid,          1'b1);
         check_vec(0, "T8 VADDR_B paddr",
-                  result_paddr, {PADDR_B[29:6], VADDR_B[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_B, VADDR_B));
 
         tlb_lookup(VADDR_C);
         check_bit(0, "T8 VADDR_C hit",  valid, 1'b1);
         check_vec(0, "T8 VADDR_C paddr",
-                  result_paddr, {PADDR_C[29:6], VADDR_C[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_C, VADDR_C));
 
         tlb_lookup(VADDR_D);
         check_bit(0, "T8 VADDR_D hit",  valid, 1'b1);
         check_vec(0, "T8 VADDR_D paddr",
-                  result_paddr, {PADDR_D[29:6], VADDR_D[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_D, VADDR_D));
 
         tlb_lookup(VADDR_A);
         check_bit(0, "T8 VADDR_A still hits after more fills", valid, 1'b1);
         check_vec(0, "T8 VADDR_A paddr unchanged",
-                  result_paddr, {PADDR_A[29:6], VADDR_A[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_A, VADDR_A));
 
         // ─────────────────────────────────────────────────────────────────
         // T9: CAPACITY – fill all 16 ways, both ends should hit
@@ -335,9 +344,9 @@ module tb_tlb;
         rst_n = 1;
         @(negedge clk);
 
-        check_bit(0, "T11 ways[0]  invalid after reset", dut.ways[0][60],  1'b0);
-        check_bit(0, "T11 ways[7]  invalid after reset", dut.ways[7][60],  1'b0);
-        check_bit(0, "T11 ways[15] invalid after reset", dut.ways[15][60], 1'b0);
+        check_bit(0, "T11 ways[0]  invalid after reset", dut.ways[0][54],  1'b0);
+        check_bit(0, "T11 ways[7]  invalid after reset", dut.ways[7][54],  1'b0);
+        check_bit(0, "T11 ways[15] invalid after reset", dut.ways[15][54], 1'b0);
         check_bit(0, "T11 ready==1 after reset",         ready,            1'b1);
         check_bit(0, "T11 valid==0 after reset",         valid,            1'b0);
 
@@ -357,7 +366,7 @@ module tb_tlb;
         tlb_lookup(VADDR_E);
         check_bit(0, "T12 hit immediately after fill", valid,          1'b1);
         check_vec(0, "T12 correct paddr",
-                  result_paddr, {PADDR_E[29:6], VADDR_E[5:0]});
+                  result_paddr, exp_lookup_paddr(PADDR_E, VADDR_E));
 
         // ─────────────────────────────────────────────────────────────────
         $display("\n==========================================");

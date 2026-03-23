@@ -319,6 +319,39 @@ module tb_l1_accurate;
         @(negedge clk);
         chk_bit("T2 stall drops after miss allocates", l1_stall_out_to_lsq, 1'b0);
 
+        // T2b: Overlap one request tagging while the next request indexes
+        $display("\n=== T2b: Overlap index of request B with tag of request A ===");
+        apply_reset();
+        @(negedge clk);
+        start_index = 1'b1;
+        trace_vaddr = VA_S0W0;
+        is_write    = 1'b0;
+        wdata       = '0;
+        @(negedge clk);
+        start_tag   = 1'b1;
+        tlb_paddr   = PA_S0T0;
+        start_index = 1'b1;
+        trace_vaddr = VA_S1W0;
+        @(negedge clk);
+        start_tag   = 1'b0;
+        tlb_paddr   = '0;
+        start_index = 1'b0;
+        chk_state("T2b request A becomes unresolved", dut.mshr_state[0], MS_UNRESOLVED);
+        chk_pa   ("T2b first miss requests PA_S0T0",  dut.mshr_paddr[0], PA_S0T0);
+        chk_bit  ("T2b request B remains buffered",   (dut.state == 3'd1), 1'b1);
+        chk_pa   ("T2b l2_req still points at A",     l2_req_paddr, PA_S0T0);
+        @(negedge clk);
+        chk_bit  ("T2b stall high while B waits for tag", l1_stall_out_to_lsq, 1'b1);
+        start_tag = 1'b1;
+        tlb_paddr = PA_S1T0;
+        @(negedge clk);
+        start_tag = 1'b0;
+        tlb_paddr = '0;
+        @(negedge clk);
+        chk_state("T2b request B becomes unresolved", dut.mshr_state[1], MS_UNRESOLVED);
+        chk_pa   ("T2b second miss requests PA_S1T0", dut.mshr_paddr[1], PA_S1T0);
+        chk_bit  ("T2b request buffer drains after second tag", (dut.state == 3'd0), 1'b1);
+
         // T3: Cold miss -> MSHR allocation -> L2 request
         $display("\n=== T3: Cold miss allocates an MSHR ===");
         apply_reset();
