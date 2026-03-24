@@ -49,7 +49,26 @@ module memory_subsystem_avl_wrapper #(
     logic [3:0]  sq_id8_live_count;
     logic [31:0] debug_status0;
     logic [31:0] debug_status1;
-    logic [31:0] debug_sq_entry [0:7];
+    logic [31:0] debug_sq_entry [0:(LSQ_ENTRIES/2)-1];
+    localparam int SQ_ENTRIES = LSQ_ENTRIES / 2;
+    localparam int SQ_PTR_W   = (SQ_ENTRIES > 1) ? $clog2(SQ_ENTRIES) : 1;
+    logic        dbg_trace_fire;
+    logic [2:0]  dbg_trace_op;
+    logic        dbg_lsq_lq_ready;
+    logic        dbg_lsq_sq_ready;
+    logic        dbg_l1_busy_to_lsq;
+    logic        dbg_issue_buf_valid;
+    logic        dbg_l1_mshr_full;
+    logic [2:0]  dbg_l1_state;
+    logic        dbg_l2_req_pending_valid;
+    logic        dbg_l2_install_pending_valid;
+    logic        dbg_duplicate_store_id;
+    logic [SQ_PTR_W-1:0] dbg_sq_head;
+    logic [SQ_PTR_W-1:0] dbg_sq_tail;
+    logic [SQ_ENTRIES*3-1:0] dbg_sq_state_flat;
+    logic [SQ_ENTRIES*4-1:0] dbg_sq_id_flat;
+    logic        core_mem_req_valid;
+    logic        core_mem_req_is_write;
 
     localparam logic [5:0] REG_TRACE_ADDR   = 6'd0;
     localparam logic [5:0] REG_TRACE_DATA   = 6'd1;
@@ -94,13 +113,13 @@ module memory_subsystem_avl_wrapper #(
 
     always_comb begin
         sq_id8_live_count = '0;
-        for (int i = 0; i < 8; i++) begin
+        for (int i = 0; i < SQ_ENTRIES; i++) begin
             debug_sq_entry[i] = '0;
-            if (u_mem_subsystem.u_lsq.sq_state[i] != u_mem_subsystem.u_lsq.SQ_EMPTY) begin
+            debug_sq_entry[i][6:3] = dbg_sq_id_flat[i*4 +: 4];
+            debug_sq_entry[i][2:0] = dbg_sq_state_flat[i*3 +: 3];
+            if (dbg_sq_state_flat[i*3 +: 3] != 3'd0) begin
                 debug_sq_entry[i][7]   = 1'b1;
-                debug_sq_entry[i][6:3] = u_mem_subsystem.u_lsq.sq_id[i];
-                debug_sq_entry[i][2:0] = u_mem_subsystem.u_lsq.sq_state[i];
-                if (u_mem_subsystem.u_lsq.sq_id[i] == 4'd8)
+                if (dbg_sq_id_flat[i*4 +: 4] == 4'd8)
                     sq_id8_live_count = sq_id8_live_count + 1'b1;
             end
         end
@@ -108,24 +127,24 @@ module memory_subsystem_avl_wrapper #(
         debug_status0 = '0;
         debug_status0[0]  = trace_valid_reg;
         debug_status0[1]  = trace_ready_wire;
-        debug_status0[2]  = u_mem_subsystem.trace_fire;
-        debug_status0[3]  = u_mem_subsystem.lsq_lq_ready;
-        debug_status0[4]  = u_mem_subsystem.lsq_sq_ready;
-        debug_status0[5]  = u_mem_subsystem.l1_busy_to_lsq;
-        debug_status0[6]  = u_mem_subsystem.issue_buf_valid;
-        debug_status0[7]  = u_mem_subsystem.u_l1.mshr_full;
-        debug_status0[8]  = u_mem_subsystem.dbg_l2_req_pending_valid;
-        debug_status0[9]  = u_mem_subsystem.dbg_l2_install_pending_valid;
-        debug_status0[10] = u_mem_subsystem.u_lsq.dbg_duplicate_store_id;
+        debug_status0[2]  = dbg_trace_fire;
+        debug_status0[3]  = dbg_lsq_lq_ready;
+        debug_status0[4]  = dbg_lsq_sq_ready;
+        debug_status0[5]  = dbg_l1_busy_to_lsq;
+        debug_status0[6]  = dbg_issue_buf_valid;
+        debug_status0[7]  = dbg_l1_mshr_full;
+        debug_status0[8]  = dbg_l2_req_pending_valid;
+        debug_status0[9]  = dbg_l2_install_pending_valid;
+        debug_status0[10] = dbg_duplicate_store_id;
         debug_status0[11] = BYPASS_L2;
-        debug_status0[12] = u_mem_subsystem.mem_req_valid;
-        debug_status0[13] = u_mem_subsystem.mem_req_is_write;
+        debug_status0[12] = core_mem_req_valid;
+        debug_status0[13] = core_mem_req_is_write;
 
         debug_status1 = '0;
-        debug_status1[2:0]   = u_mem_subsystem.trace_op;
-        debug_status1[5:3]   = u_mem_subsystem.u_l1.state;
-        debug_status1[8:6]   = u_mem_subsystem.u_lsq.sq_head;
-        debug_status1[11:9]  = u_mem_subsystem.u_lsq.sq_tail;
+        debug_status1[2:0]   = dbg_trace_op;
+        debug_status1[5:3]   = dbg_l1_state;
+        debug_status1[8:6]   = dbg_sq_head;
+        debug_status1[11:9]  = dbg_sq_tail;
         debug_status1[15:12] = sq_id8_live_count;
     end
 
@@ -179,8 +198,8 @@ module memory_subsystem_avl_wrapper #(
         .trace_write    (trace_data_write_pulse),
         .trace_ready    (trace_ready_wire),
 
-        .mem_req_valid  (),
-        .mem_req_is_write(),
+        .mem_req_valid  (core_mem_req_valid),
+        .mem_req_is_write(core_mem_req_is_write),
         .mem_req_addr   (),
         .mem_req_wdata  (),
         .mem_req_ready  (1'b0),
@@ -197,7 +216,22 @@ module memory_subsystem_avl_wrapper #(
         .avm_byteenable    (avm_byteenable),
         .avm_readdata      (avm_readdata),
         .avm_readdatavalid (avm_readdatavalid),
-        .avm_waitrequest   (avm_waitrequest)
+        .avm_waitrequest   (avm_waitrequest),
+        .dbg_trace_fire    (dbg_trace_fire),
+        .dbg_trace_op      (dbg_trace_op),
+        .dbg_lsq_lq_ready  (dbg_lsq_lq_ready),
+        .dbg_lsq_sq_ready  (dbg_lsq_sq_ready),
+        .dbg_l1_busy_to_lsq(dbg_l1_busy_to_lsq),
+        .dbg_issue_buf_valid(dbg_issue_buf_valid),
+        .dbg_l1_mshr_full  (dbg_l1_mshr_full),
+        .dbg_l1_state      (dbg_l1_state),
+        .dbg_l2_req_pending_valid(dbg_l2_req_pending_valid),
+        .dbg_l2_install_pending_valid(dbg_l2_install_pending_valid),
+        .dbg_duplicate_store_id(dbg_duplicate_store_id),
+        .dbg_sq_head       (dbg_sq_head),
+        .dbg_sq_tail       (dbg_sq_tail),
+        .dbg_sq_state_flat (dbg_sq_state_flat),
+        .dbg_sq_id_flat    (dbg_sq_id_flat)
     );
 
 endmodule

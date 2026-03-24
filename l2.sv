@@ -65,7 +65,11 @@ module l2_cache #(
     // Memory -> L2
     input  logic                    mem_resp_valid,
     input  logic [PA_WIDTH-1:0]     mem_resp_paddr,
-    input  logic [BLOCK_SIZE*8-1:0] mem_resp_rdata
+    input  logic [BLOCK_SIZE*8-1:0] mem_resp_rdata,
+
+    // Debug visibility for FPGA wrapper
+    output logic                    dbg_req_pending_valid,
+    output logic                    dbg_install_pending_valid
 );
 
     // =========================================================================
@@ -184,6 +188,9 @@ module l2_cache #(
     logic                install_pending_valid;
     logic [PA_WIDTH-1:0] install_pending_paddr;
     logic [LINE_W-1:0]   install_pending_block;
+
+    assign dbg_req_pending_valid     = req_pending_valid;
+    assign dbg_install_pending_valid = install_pending_valid;
 
     localparam logic [1:0] DATA_RD_NONE       = 2'b00;
     localparam logic [1:0] DATA_RD_REQ_HIT    = 2'b01;

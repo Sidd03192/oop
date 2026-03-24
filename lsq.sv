@@ -50,7 +50,14 @@ module lsq #(
     // MEM issue — exposed so higher module can drive TLB/L1 with correct vaddr
     output logic [VA_WIDTH-1:0]             issue_vaddr,
     output logic [DATA_WIDTH -1:0]          issue_wdata,
-    output logic [2:0]                      issue_op
+    output logic [2:0]                      issue_op,
+
+    // Debug visibility for FPGA wrapper
+    output logic [$clog2(SQ_ENTRIES)-1:0]   dbg_sq_head,
+    output logic [$clog2(SQ_ENTRIES)-1:0]   dbg_sq_tail,
+    output logic [SQ_ENTRIES*3-1:0]         dbg_sq_state_flat,
+    output logic [SQ_ENTRIES*4-1:0]         dbg_sq_id_flat,
+    output logic                            dbg_duplicate_store_id
 );
 
     localparam int LQ_PTR_WIDTH = $clog2(LQ_ENTRIES);
@@ -102,11 +109,14 @@ module lsq #(
     logic [SQ_PTR_WIDTH - 1:0] sq_head, sq_tail;
 
     assign sq_ready = (sq_state[sq_tail] == SQ_EMPTY);
-    logic dbg_duplicate_store_id;
+    assign dbg_sq_head = sq_head;
+    assign dbg_sq_tail = sq_tail;
 
     always_comb begin
         dbg_duplicate_store_id = 1'b0;
         for (int i = 0; i < SQ_ENTRIES; i++) begin
+            dbg_sq_state_flat[i*3 +: 3] = sq_state[i];
+            dbg_sq_id_flat[i*4 +: 4] = sq_id[i];
             for (int j = i + 1; j < SQ_ENTRIES; j++) begin
                 if (!dbg_duplicate_store_id &&
                     sq_state[i] != SQ_EMPTY &&
