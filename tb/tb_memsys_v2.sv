@@ -593,12 +593,12 @@ module tb_memsys_v2;
                 if (dut.u_l1.mshr_state[0] == L1_MS_IDLE &&
                     dut.u_l1.mshr_state[1] == L1_MS_IDLE &&
                     dut.u_l1.state == 3'd0 &&
-                    dut.u_l2.mshr_state[0] == L2_MS_IDLE &&
-                    dut.u_l2.mshr_state[1] == L2_MS_IDLE &&
-                    dut.u_l2.mshr_state[2] == L2_MS_IDLE &&
-                    dut.u_l2.mshr_state[3] == L2_MS_IDLE &&
+                    dut.gen_use_l2.u_l2.mshr_state[0] == L2_MS_IDLE &&
+                    dut.gen_use_l2.u_l2.mshr_state[1] == L2_MS_IDLE &&
+                    dut.gen_use_l2.u_l2.mshr_state[2] == L2_MS_IDLE &&
+                    dut.gen_use_l2.u_l2.mshr_state[3] == L2_MS_IDLE &&
                     dut.u_l1.wb_empty &&
-                    dut.u_l2.wb_empty &&
+                    dut.gen_use_l2.u_l2.wb_empty &&
                     dut.u_tlb.ready &&
                     !dut.u_lsq.valid_out &&
                     lsq_quiescent) begin
@@ -653,9 +653,9 @@ module tb_memsys_v2;
                 l2_tag = paddr[29:10];
                 for (way = 0; way < 4; way = way + 1) begin
                     if (!found &&
-                        dut.u_l2.set_valids[set_idx][way] &&
-                        dut.u_l2.tags[set_idx][way] == l2_tag) begin
-                        value = dut.u_l2.set_contents[way][set_idx][word_idx*DATA_WIDTH +: DATA_WIDTH];
+                        dut.gen_use_l2.u_l2.set_valids[set_idx][way] &&
+                        dut.gen_use_l2.u_l2.tags[set_idx][way] == l2_tag) begin
+                        value = dut.gen_use_l2.u_l2.set_contents[way][set_idx][word_idx*DATA_WIDTH +: DATA_WIDTH];
                         found = 1'b1;
                     end
                 end
@@ -878,8 +878,8 @@ module tb_memsys_v2;
             $display("  l1_state=%0d l1_mshr_state={%0d,%0d} l1_wb_empty=%0b",
                      dut.u_l1.state, dut.u_l1.mshr_state[0], dut.u_l1.mshr_state[1], dut.u_l1.wb_empty);
             $display("  l2_mshr_state={%0d,%0d,%0d,%0d} l2_wb_empty=%0b",
-                     dut.u_l2.mshr_state[0], dut.u_l2.mshr_state[1], dut.u_l2.mshr_state[2],
-                     dut.u_l2.mshr_state[3], dut.u_l2.wb_empty);
+                     dut.gen_use_l2.u_l2.mshr_state[0], dut.gen_use_l2.u_l2.mshr_state[1], dut.gen_use_l2.u_l2.mshr_state[2],
+                     dut.gen_use_l2.u_l2.mshr_state[3], dut.gen_use_l2.u_l2.wb_empty);
             $display("========================================");
             $fatal(1, "tb_memsys_v2 timeout");
         end

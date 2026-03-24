@@ -102,6 +102,21 @@ module lsq #(
     logic [SQ_PTR_WIDTH - 1:0] sq_head, sq_tail;
 
     assign sq_ready = (sq_state[sq_tail] == SQ_EMPTY);
+    logic dbg_duplicate_store_id;
+
+    always_comb begin
+        dbg_duplicate_store_id = 1'b0;
+        for (int i = 0; i < SQ_ENTRIES; i++) begin
+            for (int j = i + 1; j < SQ_ENTRIES; j++) begin
+                if (!dbg_duplicate_store_id &&
+                    sq_state[i] != SQ_EMPTY &&
+                    sq_state[j] != SQ_EMPTY &&
+                    sq_id[i] == sq_id[j]) begin
+                    dbg_duplicate_store_id = 1'b1;
+                end
+            end
+        end
+    end
 
     // =========================================================================
     // LOAD ISSUE ARBITRATION

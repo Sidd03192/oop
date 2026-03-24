@@ -6,7 +6,7 @@ module tb_avl_first2;
     logic        clk;
     logic        rst_n;
 
-    logic [1:0]  avs_address;
+    logic [5:0]  avs_address;
     logic        avs_write;
     logic        avs_read;
     logic [31:0] avs_writedata;
@@ -63,7 +63,7 @@ module tb_avl_first2;
     endtask
 
     task automatic mmio_write(
-        input logic [1:0]  addr,
+        input logic [5:0]  addr,
         input logic [31:0] data
     );
         begin

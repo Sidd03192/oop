@@ -11,19 +11,21 @@ module memory_subsystem_avl_wrapper #(
     parameter L1_MSHRS    = 2,
     parameter L2_CAPACITY = 4096,
     parameter L2_WAYS     = 4,
-    parameter L2_MSHRS    = 4
+    parameter L2_MSHRS    = 4,
+    parameter BYPASS_L2   = 1'b1
 )(
     input  logic        clk,
     input  logic        rst_n,
 
     // ── Avalon-MM slave (HPS → FPGA) ─────────────────────────────────
     // Platform Designer connects the HPS lightweight HPS-to-FPGA bridge here.
-    // Address is word-addressed (2 bits → 4 registers):
+    // Address is word-addressed:
     //   0x0  trace_addr  [1:0]   write-only
     //   0x4  trace_data  [31:0]  write-only
     //   0x8  trace_valid [0]     write-only
     //   0xC  trace_ready [0]     read-only
-    input  logic [1:0]  avs_address,
+    //   0x10..0x34 debug/status registers, documented in docs/dev-why-nate.md
+    input  logic [5:0]  avs_address,
     input  logic        avs_write,
     input  logic        avs_read,
     input  logic [31:0] avs_writedata,
@@ -44,6 +46,18 @@ module memory_subsystem_avl_wrapper #(
     logic [31:0] trace_data_reg;
     logic        trace_valid_reg;
     logic        trace_ready_wire;
+    logic [3:0]  sq_id8_live_count;
+    logic [31:0] debug_status0;
+    logic [31:0] debug_status1;
+    logic [31:0] debug_sq_entry [0:7];
+
+    localparam logic [5:0] REG_TRACE_ADDR   = 6'd0;
+    localparam logic [5:0] REG_TRACE_DATA   = 6'd1;
+    localparam logic [5:0] REG_TRACE_VALID  = 6'd2;
+    localparam logic [5:0] REG_TRACE_READY  = 6'd3;
+    localparam logic [5:0] REG_DEBUG_STATUS0 = 6'd4;
+    localparam logic [5:0] REG_DEBUG_STATUS1 = 6'd5;
+    localparam logic [5:0] REG_DEBUG_SQ0     = 6'd6;
 
     // Pulse high for exactly one cycle when trace_data is written.
     // This is what actually clocks the chunk into trace_line inside
@@ -67,24 +81,71 @@ module memory_subsystem_avl_wrapper #(
 
             if (avs_write) begin
                 case (avs_address)
-                    2'd0: trace_addr_reg  <= avs_writedata[1:0];  // step 1
-                    2'd1: begin
+                    REG_TRACE_ADDR: trace_addr_reg  <= avs_writedata[1:0];  // step 1
+                    REG_TRACE_DATA: begin
                         trace_data_reg        <= avs_writedata;    // step 2
                         trace_data_write_pulse <= 1'b1;            // fires chunk write
                     end
-                    2'd2: trace_valid_reg <= avs_writedata[0];
+                    REG_TRACE_VALID: trace_valid_reg <= avs_writedata[0];
                 endcase
             end
         end
     end
 
+    always_comb begin
+        sq_id8_live_count = '0;
+        for (int i = 0; i < 8; i++) begin
+            debug_sq_entry[i] = '0;
+            if (u_mem_subsystem.u_lsq.sq_state[i] != u_mem_subsystem.u_lsq.SQ_EMPTY) begin
+                debug_sq_entry[i][7]   = 1'b1;
+                debug_sq_entry[i][6:3] = u_mem_subsystem.u_lsq.sq_id[i];
+                debug_sq_entry[i][2:0] = u_mem_subsystem.u_lsq.sq_state[i];
+                if (u_mem_subsystem.u_lsq.sq_id[i] == 4'd8)
+                    sq_id8_live_count = sq_id8_live_count + 1'b1;
+            end
+        end
+
+        debug_status0 = '0;
+        debug_status0[0]  = trace_valid_reg;
+        debug_status0[1]  = trace_ready_wire;
+        debug_status0[2]  = u_mem_subsystem.trace_fire;
+        debug_status0[3]  = u_mem_subsystem.lsq_lq_ready;
+        debug_status0[4]  = u_mem_subsystem.lsq_sq_ready;
+        debug_status0[5]  = u_mem_subsystem.l1_busy_to_lsq;
+        debug_status0[6]  = u_mem_subsystem.issue_buf_valid;
+        debug_status0[7]  = u_mem_subsystem.u_l1.mshr_full;
+        debug_status0[8]  = u_mem_subsystem.dbg_l2_req_pending_valid;
+        debug_status0[9]  = u_mem_subsystem.dbg_l2_install_pending_valid;
+        debug_status0[10] = u_mem_subsystem.u_lsq.dbg_duplicate_store_id;
+        debug_status0[11] = BYPASS_L2;
+        debug_status0[12] = u_mem_subsystem.mem_req_valid;
+        debug_status0[13] = u_mem_subsystem.mem_req_is_write;
+
+        debug_status1 = '0;
+        debug_status1[2:0]   = u_mem_subsystem.trace_op;
+        debug_status1[5:3]   = u_mem_subsystem.u_l1.state;
+        debug_status1[8:6]   = u_mem_subsystem.u_lsq.sq_head;
+        debug_status1[11:9]  = u_mem_subsystem.u_lsq.sq_tail;
+        debug_status1[15:12] = sq_id8_live_count;
+    end
+
     // Read handler
     always_comb begin
         case (avs_address)
-            2'd0:    avs_readdata = {30'b0, trace_addr_reg};
-            2'd1:    avs_readdata = trace_data_reg;
-            2'd2:    avs_readdata = {31'b0, trace_valid_reg};
-            2'd3:    avs_readdata = {31'b0, trace_ready_wire};
+            REG_TRACE_ADDR:    avs_readdata = {30'b0, trace_addr_reg};
+            REG_TRACE_DATA:    avs_readdata = trace_data_reg;
+            REG_TRACE_VALID:   avs_readdata = {31'b0, trace_valid_reg};
+            REG_TRACE_READY:   avs_readdata = {31'b0, trace_ready_wire};
+            REG_DEBUG_STATUS0: avs_readdata = debug_status0;
+            REG_DEBUG_STATUS1: avs_readdata = debug_status1;
+            (REG_DEBUG_SQ0 + 6'd0): avs_readdata = debug_sq_entry[0];
+            (REG_DEBUG_SQ0 + 6'd1): avs_readdata = debug_sq_entry[1];
+            (REG_DEBUG_SQ0 + 6'd2): avs_readdata = debug_sq_entry[2];
+            (REG_DEBUG_SQ0 + 6'd3): avs_readdata = debug_sq_entry[3];
+            (REG_DEBUG_SQ0 + 6'd4): avs_readdata = debug_sq_entry[4];
+            (REG_DEBUG_SQ0 + 6'd5): avs_readdata = debug_sq_entry[5];
+            (REG_DEBUG_SQ0 + 6'd6): avs_readdata = debug_sq_entry[6];
+            (REG_DEBUG_SQ0 + 6'd7): avs_readdata = debug_sq_entry[7];
             default: avs_readdata = '0;
         endcase
     end
@@ -104,7 +165,8 @@ module memory_subsystem_avl_wrapper #(
         .L2_CAPACITY   (L2_CAPACITY),
         .L2_WAYS       (L2_WAYS),
         .L2_MSHRS      (L2_MSHRS),
-        .USE_AVALON_MEM(1'b1)
+        .USE_AVALON_MEM(1'b1),
+        .BYPASS_L2     (BYPASS_L2)
     ) u_mem_subsystem (
         .clk            (clk),
         .rst_n          (rst_n),
