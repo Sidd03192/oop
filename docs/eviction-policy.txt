@@ -1,0 +1,18 @@
+  LRU
+
+  instructions      = 3774 (memory ops only)
+  l2_misses         = 100
+  L2 MPKI           = 26.50
+
+  RRIP
+
+  instructions      = 3774 (memory ops only)
+  l2_misses         = 104
+  L2 MPKI           = 27.56
+
+  For this part of the extra credit, we decided to implement RRIP in both the TLB and the L2 cache. We knew that implementing RRIP in the TLB was kind of dumb
+  because we didn't have to do a page table walk, but we decided to do it anyways to make sure we understood how RRIP worked. As for the L2, by looking
+  at the MPKI differences between the LRU and the RRIP, we noticed that they were very cloes, with RRIP being slightly worse when it comes to L2 misses and mpki.
+  
+  This could be due to the traces that we fed into the system and the small amount of them. RRIP is better for larger workloads with lower temporal locality, where you scan
+  large amounts of data that you may or may not use for example. These traces don't really do that, which could also be a reason for why RRIP did slightly worse.
