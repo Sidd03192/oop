@@ -2,17 +2,35 @@
 
   instructions = 6281
   l2_misses = 297
-  L2 MPKI = 47.29
+  L2 MPKI (Misses per kilo instructions) = 47.29
 
   RRIP
 
   instructions = 6281
   l2_misses = 271
-  L2 MPKI = 43.15
+  L2 MPKI (Misses per kilo instructions) = 43.15
 
-  For this part of the extra credit, we decided to implement RRIP in both the TLB and the L2 cache. We knew that implementing RRIP in the TLB was kind of dumb
-  because we didn't have to do a page table walk, but we decided to do it anyways to make sure we understood how RRIP worked. As for the L2, by looking
-  at the MPKI differences between the LRU and the RRIP, we noticed that RRIP was a decent amount better than LRU.
+  For this part of the extra credit, we decided to implement RRIP, specifically static RRIP, in both the TLB and the L2 cache. 
   
-  RRIP is better for larger workloads with lower temporal locality, where you scan large amounts of data that you may or may not use, which these traces do as it is
-  a matrix operation. RRIP excels in this regard, leading to RRIP being better than LRU regarding misses.
+  RRIP stands for "Re-reference Interval Prediction". It is an eviction policy that works (in our implementation) by having an "age" for every line, a number that ranges
+  from 0 to 3 inclusive. When looking for a line to evict, the policy looks for a number at age 3 to evict. If there are no numbers at age 3, then every line's
+  age is incremented by 1. If a line is at age 3, then that line is evicted, otherwise their ages are all incremented again. This repeats until a line is able
+  to be evicted. This means that at worst, this takes about 3 searches, in the case where all lines are at age 0. Whenever a line is added to the cache or entry
+  is added to the TLB, it is added at age 2, or the max age minus 1. This means that usually if a line is added, it is at risk of being removed fairly quickly
+  compared to other entries/lines. It is only when a line is accessed after being inserted that its age gets set to 0, giving meaning to the word "re-reference" in the
+  name RRIP, and making sure that that line or entry won't be evicted any time soon. This means that RRIP is better for larger workloads with lower temportal locality, such
+  as a scan of a large dataset, where you won't necessarily use everything that you insert into the cache. With LRU, every line insertion is considered high priortiy, as
+  the line was recently used/inserted, causing it to kick out high priority lines when doing something like a scan, while RRIP is able to differentiate between insertions
+  and actual accesses. 
+
+  Additionally, RRIP is pretty space efficient, as it only requires a 2-bit counter for each way or entry.
+
+  We knew that implementing RRIP in the TLB was kind of dumb because we didn't have to do a page table walk,
+  but we decided to do it anyways to make sure we understood how RRIP worked.
+
+  To measure effectiveness of the two eviction policies, we added a statistic that measured L2 cache misses in our testbench that ran the traces. Additionally,
+  we added a statistic called "Misses per kilo instructions", or "MPKI", which gives a number regarding the average number of misses for every 1000 instructions.
+  
+  Looking at the stats, we can see that RRIP ended up being better, with an MPKI of 43.15 against LRU's MPKI if 47.29. This makes sense, as RRIP is better for larger
+  workloads with lower temporal locality, where you scan large amounts of data that you may or may not use, which these traces do as it is
+  a matrix operation. RRIP excels in this regard, making it make sense that RRIP ended up being better than LRU regarding misses for these traces.
