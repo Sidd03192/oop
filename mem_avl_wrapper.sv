@@ -34,8 +34,8 @@ module memory_subsystem_avl_wrapper #(
     output logic [31:0] avs_readdata,
 
     // ── Avalon-MM master (FPGA → SDRAM) ──────────────────────────────
-    output logic [28:0] avm_address,
-    output logic  [7:0] avm_burstcount,
+    output logic [31:0] avm_address,
+    output logic [10:0] avm_burstcount,
     output logic        avm_read,
     output logic        avm_write,
     output logic [63:0] avm_writedata,

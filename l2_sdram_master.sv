@@ -37,8 +37,8 @@ module l2_sdram_master (
     // -------------------------------------------------------------------------
     // Avalon-MM Master port  (wire to f2h_sdram0_data in Platform Designer)
     // -------------------------------------------------------------------------
-    output logic [28:0] avm_address,
-    output logic  [7:0] avm_burstcount,
+    output logic [31:0] avm_address,
+    output logic [10:0] avm_burstcount,
     output logic        avm_read,
     output logic        avm_write,
     output logic [63:0] avm_writedata,
