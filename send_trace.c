@@ -7,9 +7,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define HW_REGS_BASE      0xFF200000u
+#define HW_REGS_BASE      0xC0000000u
 #define HW_REGS_SPAN      0x00200000u
-#define TRACE_BASE_OFFSET 0x00000000u
+#define TRACE_BASE_OFFSET 0x00002000u
 
 #define OFF_TRACE_ADDR    0x0u
 #define OFF_TRACE_DATA    0x4u
