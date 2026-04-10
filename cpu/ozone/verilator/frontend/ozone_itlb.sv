@@ -1,4 +1,4 @@
-`timescale 1ns/1ps
+// `timescale 1ns/1ps
 // Instruction TLB: 16-entry fully-associative VA->PA translation for fetch,
 // miss detection, and page-table refill interface.
 module ozone_itlb

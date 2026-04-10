@@ -15,12 +15,13 @@ module Top (
 );
 
     reg [31:0] state;
-    reg [63:0] pc;
-    reg [63:0] pa_pc;
+    reg [47:0] pc;
+    reg [29:0] pa_pc;
 
     reg [17:0] ttbr0;
 
     logic [63:0] tte;
+    logic [31:0] insn_bits;
 
     logic        itlb_lookup_req;
     logic [47:0] itlb_vaddr;
@@ -33,6 +34,8 @@ module Top (
     logic        itlb_lookup_ack_o;
     logic        itlb_fill_ack_o;
     logic        itlb_flush_ack_o;
+
+    logic halt_fetch;
     
     ozone_itlb ozone_itlb (
         .clk_i         (clk),
@@ -54,7 +57,7 @@ module Top (
         if (reset) begin
             state <= 0;
             done <= 0;
-            pc <= 64'h20000000; // Default reset vector
+            pc <= 48'h20000000; // Default reset vector
             mem_en <= 0;
             for (int i=0; i<31; i++) x_regs[i] <= 0;
 
@@ -62,9 +65,11 @@ module Top (
         end else if (!done) begin
             case (state)
                 0: begin
-                    itlb_lookup_req <= 1;
-                    itlb_vaddr <= pc;
-                    state <= 1;
+                    if (!halt_fetch) begin
+                        itlb_lookup_req <= 1;
+                        itlb_vaddr <= pc;
+                        state <= 1;
+                    end
                 end
 
                 1: begin
@@ -78,13 +83,17 @@ module Top (
                             // TODO: Check bounds, handle page fault.
                             logic [35:0] pc_vpn;
                             logic [29:0] entry_addr;
+                            logic [29:0] ind;
 
                             pc_vpn = pc[47:12];
 
-                            // Are the entries 8 or 4 bytes?
-                            entry_addr = {ttbr0, 12'b0} + (pc_vpn << 3);
+                            // TODO: Check bounds here.
+                            ind = pc_vpn[29:0];
 
-                            mem_addr <= entry_addr;
+                            // Are the entries 8 or 4 bytes?
+                            entry_addr = {ttbr0, 12'b0} + (ind << 3);
+
+                            mem_addr <= {34'b0, entry_addr};
                             mem_en <= 1;
                             state <= 2;
                         end
@@ -101,11 +110,8 @@ module Top (
 
                 3: begin
                     // TLB fill, read memory (upper 4 bytes of entry)
-                    logic [63:0] full_tte;
-
                     mem_en <= 0;
                     mem_addr <= mem_addr + 4;
-                    full_tte = {mem_rdata, tte[31:0]};
                     tte[63:32] <= mem_rdata;
 
                     itlb_fill_req <= 1;
@@ -123,6 +129,24 @@ module Top (
 
                 5: begin
                     // pc translated. read instruction, send to decode and bp.
+                    mem_en <= 1;
+                    mem_addr <= {34'b0, pa_pc};
+                    state <= 6;
+                end
+
+                6: begin
+                    // wait for address to be read.
+                    mem_en <= 0;
+                    state <= 7;
+                    insn_bits <= mem_rdata;
+                end
+
+                7: begin
+                    if (halt_fetch) begin
+                        // Don't send yet.
+                    end else begin
+                        // Send to decode.
+                    end
                 end
                 
                 /*
