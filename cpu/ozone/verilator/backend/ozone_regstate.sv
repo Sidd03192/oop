@@ -35,8 +35,10 @@ module ozone_regstate
   // rob comit
   input  logic                      commit_en, // if rob is even comitting
   input  logic [4:0]                commit_addr,
+  input  logic [63:0]               commit_value,
   input  logic [ROB_IDX_WIDTH-1:0]  commit_rob_idx,
   input  logic                      commit_nzcv_en,
+  input  logic [3:0]                commit_nzcv_value,
   input  logic [ROB_IDX_WIDTH-1:0]  commit_nzcv_rob_idx
 );
 
@@ -57,30 +59,43 @@ module ozone_regstate
   // Sequential logic
   // Priority/order within a cycle:
   // 1. reset/flush clears busy bits
-  // 2. commit clears busy for the matching retiring ROB writer
+  // 2. commit updates the architectural value and clears busy for the
+  //    matching retiring ROB writer
   // 3. dispatch marks new destinations busy with new ROB tag
   // Dispatch comes after commit so a same-cycle commit+dispatch to the same
   // architectural destination leaves that entry busy for the newer writer.
   always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n || flush) begin
-      // Clear all busy bits on reset or flush
+    if (!rst_n) begin
+      // Reset architectural state.
+      for (int i = 0; i < 31; i++) begin
+        gp_reg[i].value   <= 64'b0;
+        gp_reg[i].busy    <= 1'b0;
+        gp_reg[i].rob_idx <= {ROB_IDX_WIDTH{1'b0}};
+      end
+      nzcv_reg.value   <= 64'b0;
+      nzcv_reg.busy    <= 1'b0;
+      nzcv_reg.rob_idx <= {ROB_IDX_WIDTH{1'b0}};
+    end else if (flush) begin
+      // Flush only kills speculative rename state; committed architectural
+      // values must remain intact.
       for (int i = 0; i < 31; i++) begin
         gp_reg[i].busy    <= 1'b0;
-        gp_reg[i].rob_idx <= '0;
+        gp_reg[i].rob_idx <= {ROB_IDX_WIDTH{1'b0}};
       end
       nzcv_reg.busy    <= 1'b0;
-      nzcv_reg.rob_idx <= '0;
-
+      nzcv_reg.rob_idx <= {ROB_IDX_WIDTH{1'b0}};
     end else begin
-      // --- Commit clears RST entry ---
-      if (commit_en) begin
+      // --- Commit updates and clears the retiring RST entry ---
+      if (commit_en && commit_addr != 5'd31) begin
         // only clear if rob entry is same
         if (gp_reg[commit_addr].rob_idx == commit_rob_idx) begin
+          gp_reg[commit_addr].value <= commit_value;
           gp_reg[commit_addr].busy <= 1'b0;
         end
       end
       if (commit_nzcv_en) begin
         if (nzcv_reg.rob_idx == commit_nzcv_rob_idx) begin
+          nzcv_reg.value <= {60'b0, commit_nzcv_value};
           nzcv_reg.busy <= 1'b0;
         end
       end

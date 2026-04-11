@@ -8,6 +8,20 @@ package ozone_pkg;
 localparam int ROB_IDX_WIDTH = 6;   // 64-entry ROB
 localparam int OPCODE_W      = 6;   // 64 possible micro-ops
 
+typedef enum logic [1:0] {
+    ROB_TYPE_ALU    = 2'd0,
+    ROB_TYPE_BRANCH = 2'd1,
+    ROB_TYPE_LOAD   = 2'd2,
+    ROB_TYPE_STORE  = 2'd3
+} rob_type_e;
+
+typedef enum logic [1:0] {
+    DEST_NONE = 2'd0,
+    DEST_GPR  = 2'd1,
+    DEST_NZCV = 2'd2,
+    DEST_BOTH = 2'd3
+} dest_type_e;
+
 // -------------------------------------------------------
 // Micro-op Opcodes (for adder FU)
 // -------------------------------------------------------
@@ -95,7 +109,7 @@ typedef struct packed {
 typedef struct packed {
     logic                       valid;        // result ready to broadcast
     logic [ROB_IDX_WIDTH-1:0]   rob_tag;      // which ROB entry completed
-    logic [63:0]                value;        // computed result
+    logic [63:0]                value;        // computed result 
     
     // flags (for ALU ops like ADDS, SUBS, CMP)
     logic                       update_nzcv;
@@ -105,11 +119,28 @@ typedef struct packed {
     logic                       br_valid;     // this is a branch result
     logic                       br_taken;
     logic [63:0]                br_target;
-    logic                       pred_taken;   // carried predicted taken/not-taken metadata
     
     // exceptions 
     logic                       exc;
     logic [7:0]                 exc_code;
 } cdb_broadcast_t;
 
+typedef struct packed {
+    logic                       valid;
+    rob_type_e                  inst_type;
+    logic [4:0]                 dest_reg;
+    dest_type_e                 dest_type;
+    logic                       alloc_has_dest;
+    logic [63:0]                value;
+    logic                       update_nzcv;
+    logic [3:0]                 nzcv;
+    logic                       ready;
+    logic                       exc;
+    logic [3:0]                 exc_code;
+    logic [63:0]                PC;
+    logic                       pred_taken; // set by dispatch
+    logic                       br_taken;
+    logic [63:0]                br_target;
+    logic [63:0]                store_addr;
+} rob_entry_t;
 endpackage
