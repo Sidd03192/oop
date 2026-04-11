@@ -86,8 +86,9 @@ typedef struct packed {
     logic [OPCODE_W-1:0]        op; // FU can do multiple micro-ops
     logic                       nzcv;      // NZCV flags for this instruction 
     cond_code_e                 branch_cond; // condition code for B.cond
-    logic                      branch_target; 
-    logic                      branch_taken;
+    logic                      branch_target; // computed target
+    logic                      branch_taken;  // computed taken/not taken (true value)
+    logic                      pred_taken;    // branch predictor's taken/not-taken decision
 } rs_entry_add_t;
 
 
@@ -104,6 +105,7 @@ typedef struct packed {
     logic                       br_valid;     // this is a branch result
     logic                       br_taken;
     logic [63:0]                br_target;
+    logic                       pred_taken;   // carried predicted taken/not-taken metadata
     
     // exceptions 
     logic                       exc;

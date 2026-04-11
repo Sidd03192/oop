@@ -290,6 +290,7 @@ module ozone_rs_adder
         result.br_valid    <= add_br_valid;
         result.br_taken    <= add_br_taken;
         result.br_target   <= add_br_target;
+        result.pred_taken  <= issue_entry.pred_taken;
         result.exc         <= 1'b0;
         result.exc_code    <= '0;
       end
