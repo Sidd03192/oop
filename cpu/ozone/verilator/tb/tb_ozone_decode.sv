@@ -1,6 +1,4 @@
 /* verilator lint_off UNUSEDSIGNAL */
-`timescale 1ns/1ps
-
 // Decode testbench.
 //
 // Each test drives one instruction word into the decoder and waits two clock
